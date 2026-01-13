@@ -45,6 +45,38 @@ impl Display for Term {
     //write!(f, "{} [{}]", {self.value}, {&self.unit})
 }
 
+impl Term {
+    fn evaluate(&self, env_tracker: &Environment) -> Result<Number, String> {
+        match self {
+            Term::DuOp(term1, operator, term2) => {
+                match operator {
+                    Operator::Add => todo!(),
+                    Operator::Sub => todo!(),
+                    Operator::Mul => todo!(),
+                    Operator::Div => todo!(),
+                    Operator::Infix(op) => {
+                        match op {
+                            val if *val == "*".to_string() => Ok(term1.evaluate(&env_tracker)? * term2.evaluate(&env_tracker)?),
+                            val if *val == "/".to_string() => term1.evaluate(&env_tracker)? / term2.evaluate(&env_tracker)?,
+                            val if *val == "+".to_string() => term1.evaluate(&env_tracker)? + term2.evaluate(&env_tracker)?,
+                            val if *val == "-".to_string() => term1.evaluate(&env_tracker)? - term2.evaluate(&env_tracker)?,
+                            op => Err(format!("unknown operator: {}", op))
+                        }
+                    }
+                }
+            },
+            Term::Var(sym) => {
+                match env_tracker.get(sym) {
+                    Some(term) => term.evaluate(env_tracker),
+                    None => Err(format!("use of undefined variable '{}' (couldn't find it when evaluating the expression)", {sym})),
+                }
+            },
+            Term::Num(number) => Ok(number.clone()),
+            Term::Empty => Err("Trying to evaluate Empty".to_owned()),
+        }
+    }
+}
+
 // this isn't expandable at runtime.
 #[derive(PartialEq, Debug)]
 enum Operator {
@@ -70,8 +102,13 @@ fn main() {
     }
 
     // pretty print the environment
-    for (key, value) in env_tracker {
+    for (key, value) in &env_tracker {
         println!("variable name: {key}, \nvalue: {}", value);
+        let result = value.evaluate(&env_tracker);
+        match result {
+            Ok(num) => println!("evaluates to: {num}"),
+            Err(msg) => println!("evaluation failed with error: {msg}"),
+        }
     }
 }
 
@@ -169,10 +206,13 @@ fn number<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
     println!("base: {:?}, exponent: {:?}", base, exponent);
     // this is temporary, until I rework how values are stored (don't really fancy using floats)
     let value = {
-        let divisor = ((base.2).to_string().len() * 10) as f64;
+        let comma_digits:u32 = (base.2).to_string().len() as u32;
+        let divisor = (i32::pow(10, comma_digits)) as f64;
+        println!("base.1 as f: {}, base.2 as f: {}, divisor: {}", base.1 as f64, base.2 as f64, divisor);
         let base_value = (base.1 as f64 + (base.2 as f64)/divisor) * if base.0 {-1.0} else {1.0};
         
-        let exp_divisor = ((exponent.2).to_string().len() * 10) as f64;
+        let exp_comma_digits:u32 = (exponent.2).to_string().len() as u32;
+        let exp_divisor = (i32::pow(10, exp_comma_digits)) as f64;
         let exponent_value = (exponent.1 as f64 + (exponent.2 as f64)/exp_divisor) * if exponent.0 {-1.0} else {1.0};
         println!("base_value: {}, exponent_value: {}", base_value, exponent_value);
         base_value * f64::powf(10.0, exponent_value)

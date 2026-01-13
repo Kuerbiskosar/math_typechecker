@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, hash::Hash, ops::{Add, Mul}, str::FromStr};
+use std::{collections::HashMap, fmt::Display, hash::Hash, ops::{Add, Div, Mul, Sub}, str::FromStr};
 
 // Because Lanter ranted about using floating point numbers, I might implement fixed point arithmetic
 // every number (and every value) has some unit attached to it ([-] being "no" unit or unitless.)
@@ -30,6 +30,28 @@ impl Add for Number {
         }
     }
 }
+impl Sub for Number {
+    type Output = Result<Self, String>;
+
+    fn sub(self, other: Self) -> Self::Output {
+        if self.unit.quantity != other.unit.quantity {
+            return Err(format!("Quantities must be the same but where {} for {} and {} for {}", self.unit.quantity, self.unit, other.unit.quantity, other.unit))
+        }
+        // convert the unit of the smaller number to the unit of the bigger
+        // when subtracting 1 kg - 1 g, the result 0.999 kg is (arguably) better than 999 g
+        // maybe at some point I make this dynamic to choose the value closer to zero? (as in 999 is further than 0.999)
+        if self.unit.modifier > other.unit.modifier {
+            // convert unit of other to unit of self
+            let new_other_value = other.value * (other.unit.modifier / self.unit.modifier);
+            Ok(Number { value: new_other_value-self.value, unit: self.unit })
+        }
+        else {
+            let new_self_value = self.value * (self.unit.modifier / other.unit.modifier);
+            Ok(Number { value: new_self_value - other.value, unit: other.unit })
+        }
+    }
+}
+
 impl Mul for Number {
     type Output = Number;
 
@@ -55,6 +77,35 @@ impl Mul for Number {
 
     }
 }
+impl Div for Number {
+    type Output = Result<Self, String>;
+
+    fn div(self, other: Self) -> Self::Output {
+        if other.value == 0.0 {
+            return Err("Division by Zero".to_owned())
+        }
+        // if the quantitys are the same, convert the bigger unit to the smaller
+        // This way we generally loose less precision (with the tradeoff, that overflow errors during conversion are more likely)
+        // (1 km / 1 m will be 1000 [-] no matter what)
+        if self.unit.quantity == other.unit.quantity {
+            if self.unit.modifier < other.unit.modifier {
+                // convert unit of other to unit of self^2
+                let new_other_value = other.value * (other.unit.modifier / self.unit.modifier);
+                Ok(Number { value: new_other_value/self.value, unit: self.unit.clone()/self.unit })
+            }
+            else { // convert unit of self to other
+                let new_self_value = self.value * (self.unit.modifier / other.unit.modifier);
+                Ok(Number { value: new_self_value / other.value, unit: other.unit.clone()*other.unit })
+            }
+        } else {
+            Ok(Number {
+                value: self.value / other.value,
+                unit: self.unit / other.unit,
+            })
+        }
+    }
+}
+
 impl Display for Number {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} [{}]", {self.value}, {&self.unit})
@@ -155,6 +206,8 @@ fn show_unit_pretty<T>(base_unit: &HashMap<String, (Option<T>, i32)>, symbol: Op
             },
         }
     };
+    denominator = denominator.trim().to_owned();
+    nominator = nominator.trim().to_owned();
     if denominator == "" && nominator == "" {
         match symbol {
             Some(sym) => sym.to_string(),
@@ -203,6 +256,40 @@ impl Mul for Unit {
         }
     }
 }
+impl Div for Unit {
+    type Output = Unit;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        // if the units have a symbol, we store the symbol and a reference to the base unit in the base_unit HashMap, if not, we merge together the existing units
+        let mut new_unit: HashMap<String, (Option<Unit>, i32)>;
+        if let Some(ref symbol) = self.symbol {
+            new_unit = HashMap::from([(symbol.clone(), (Some(self.clone()), 1))]);
+        } else {
+            new_unit = self.base_unit.clone();
+        }
+        // same check as above for rhs
+        if let Some(ref symbol) = rhs.symbol {
+            merge_units_dividing(&mut new_unit, &HashMap::from([(symbol.clone(), (Some(rhs.clone()), 1))]));
+        } else {
+            merge_units_dividing(&mut new_unit, &rhs.base_unit);
+        }
+        // check if the resulting unit is a base unit
+        let new_base_unit = to_base_units(&new_unit);
+        // if the result would be unitless or a base unit
+        if new_base_unit.len() <= 1 {
+           new_unit = new_base_unit;
+        }
+        let quantity = self.quantity/rhs.quantity;
+        Unit {
+            name: None,
+            symbol: None,
+            base_unit: new_unit,
+            quantity: quantity,
+            modifier: self.modifier * rhs.modifier,
+        }
+    }
+}
+
 impl Unit {
     /// panics if the given string is too long
     /// a new unit based on a base quantity
@@ -420,6 +507,20 @@ impl Mul for Quantity {
         }
     }
 }
+impl Div for Quantity {
+    type Output = Quantity;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        let mut new_quantity = self.base_quantity.clone();
+        merge_units_dividing(&mut new_quantity, &rhs.base_quantity);
+        Quantity {
+            name: None,
+            symbol: None,
+            base_quantity: new_quantity,
+        }
+    }
+}
+
 fn to_base_quantitys(composed_units: &HashMap<String, (Option<Quantity>, i32)>) -> HashMap<String, (Option<Quantity>, i32)> {
     let mut out: HashMap<String, (Option<Quantity>, i32)> = HashMap::default();
     for (key, (unit, exponent)) in composed_units {    
@@ -628,6 +729,7 @@ mod tests {
 
         assert_eq!(c.unit.base_unit, HashMap::from([("ↇ".to_string(), (Some(vel.clone()), 1)), ("m".to_string(), (None, 1))]));
     }
+    // TODO: add unit tests for division
     #[test]
     fn is_comparision_deterministic() {
         let mut quantity_tracker = HashMap::new();
