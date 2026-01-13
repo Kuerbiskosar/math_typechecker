@@ -5,7 +5,7 @@ use std::{collections::HashMap, fmt::Display, hash::Hash, ops::{Add, Mul}, str::
 // new units will be generated at runtime, so I am not quite shure what the best way to implement them is.
 // for now, the unit will be represented by a string! (The fisrst solution that comes to mind, which ~might~ be quite good)
 // how will I mix and match between natural numbers and floats and etc???
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Number {
     pub value: f64,
     // imaginary_value: f64 // This may be added in the future (or there will be another number type?)
@@ -296,6 +296,10 @@ impl Unit {
             symbol
         };
         todo!()
+    }
+
+    pub fn unitless() -> Unit {
+        Unit::new_derived("unitless", "-", Vec::default())
     }
 }
 
