@@ -9,67 +9,70 @@
 /// Output of pharsers. The pharser generates a output of Type T, based on some input &str.
 /// The unprocessed part of the input gets returned as the second element of the returned tuple.
 /// If the pharser doesn't succeed, an error result gets returned inside Err.
-type PharseResult<'a,T> = Result<(T, &'a str), String>; // error messages must be strings, because they contain information which is not known at compile time (such as on which line the error ocurred)
-//type Pharser2<'a, T> = dyn Fn(&str) -> PharseResult<'a, T>;
+pub type ParseResult<'a,T> = Result<(T, &'a str), String>; // error messages must be strings, because they contain information which is not known at compile time (such as on which line the error ocurred)
+//type Pharser2<'a, T> = dyn Fn(&str) -> ParseResult<'a, T>;
 //type Pharser = &str -> Result<(char,int),&str>;
 // gets one character from the string. basic building block for further pharsers
-fn item<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
+pub fn item<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
     // condiser pharsing whole grapheme clusters, to interpret symbols build with stopchars and their "hardcoded" unicode equivalent the same
     fn strip_first_char(to_strip: &str) -> &str {
         let mut chars = to_strip.chars();
         chars.next();
         chars.as_str()
     }
-    match to_pharse.chars().nth(0) {
-        Some(character) => Ok((character, strip_first_char(to_pharse))),
-        None => Err("End of input".to_string()),
+    match to_parse.chars().nth(0) {
+        Some(character) => Ok((character, strip_first_char(to_parse))),
+        None => Err("unexpected end of input".to_string()),
     }
 }
 /// succeeds with the first character, if the character fulfills the predicate
-fn item_satisfies<'a, Predicate>(to_pharse: &'a str, predicate: Predicate) -> PharseResult<'a, char> 
+fn item_satisfies<'a, Predicate>(to_parse: &'a str, predicate: Predicate) -> ParseResult<'a, char> 
 where
     Predicate: Fn(char) -> bool
 {
-    let (token, remaining) = item(&to_pharse)?;
+    let (token, remaining) = item(&to_parse)?;
     if predicate(token) {
         Ok((token, remaining))
     } else {
-        Err("character doesn't fulfill predicate".to_string())
+        Err(format!("character '{}' doesn't fulfill predicate", token))
     }
 }
 
 // single character pharsers
 
-fn alphabetic<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x: char| x.is_alphabetic())
+fn alphabetic<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x: char| x.is_alphabetic())
 }
-fn digit<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x|x.is_digit(10)) // consider adding pharsers for other common bases
+fn digit<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x|x.is_digit(10)) // consider adding pharsers for other common bases
 }
-fn alphanumeric<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x|x.is_alphanumeric()) // consider adding pharsers for other common bases
+fn alphanumeric<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x|x.is_alphanumeric())
+}
+fn non_alphanumeric<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x: char| !x.is_alphanumeric() && !x.is_whitespace())
 }
 
-fn upper<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x|x.is_uppercase()) // consider adding pharsers for other common bases
+fn upper<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x|x.is_uppercase())
 }
-fn lower<'a>(to_pharse: &'a str) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x|x.is_lowercase()) // consider adding pharsers for other common bases
+fn lower<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x|x.is_lowercase())
 }
-fn char<'a>(to_pharse: &'a str, char_to_match: char) -> PharseResult<'a, char> {
-    item_satisfies(to_pharse, |x| x == char_to_match) // consider adding pharsers for other common bases
+pub fn char<'a>(to_parse: &'a str, char_to_match: char) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x| x == char_to_match)
 }
 
 // applies the pharser at least once
-fn some<'a, Parser, S>(to_pharse: &'a str, parser: Parser) -> PharseResult<'a, String> 
+pub fn some<'a, Parser, S>(to_parse: &'a str, parser: Parser) -> ParseResult<'a, String> 
 where
-   Parser: Fn(&'a str) -> PharseResult<'a, S>,
+   Parser: Fn(&'a str) -> ParseResult<'a, S>,
    S: ToString
    //Parser: Fn(&'a str) -> Result<(char, &'a str), &str>
 {
-    match parser(to_pharse) {
-        Ok((a, to_pharse_tail)) => {
-            match many(to_pharse_tail, parser) {
+    match parser(to_parse) {
+        Ok((a, to_parse_tail)) => {
+            match many(to_parse_tail, parser) {
                 Ok((string, pharse_tail)) => Ok((format!("{}{}", a.to_string(), string), pharse_tail)),
                 err @ Err(_) => err,
             }
@@ -79,19 +82,19 @@ where
 }
 /// applies the pharser until it fails, returning the result as a string
 /// The result of the pharser must be convertible to a string
-fn many<'a, Parser, S>(to_pharse: &'a str, parser: Parser) -> PharseResult<'a, String>
+pub fn many<'a, Parser, S>(to_parse: &'a str, parser: Parser) -> ParseResult<'a, String>
 where
-   Parser: Fn(&'a str) -> PharseResult<'a, S>,
+   Parser: Fn(&'a str) -> ParseResult<'a, S>,
    S: ToString
 {
-    match parser(to_pharse) {
-        Ok((a, to_pharse_tail)) => {
-            match some(to_pharse_tail, parser) {
+    match parser(to_parse) {
+        Ok((a, to_parse_tail)) => {
+            match some(to_parse_tail, parser) {
                 Ok((string, pharse_tail)) => Ok((format!("{}{}", a.to_string(), string), pharse_tail)),
-                Err(_) => Ok((a.to_string(), to_pharse_tail)), // return with empty string
+                Err(_) => Ok((a.to_string(), to_parse_tail)), // return with empty string
             }
         },
-        Err(_) => Ok(("".to_string(), to_pharse)),
+        Err(_) => Ok(("".to_string(), to_parse)),
     }
 }
 
@@ -100,81 +103,81 @@ where
 // This makes kind of sense, since using more than 12 elements in a tuple might be bad design, but using 12 pharsers in a row doesn't seem THAT unplausible.
 // trait to use tuples of functions in pharsers (for alt and seq)
 // trait Parsable<'a, T> {
-//     fn alt(self, to_pharse: &'a str) -> PharseResult<'a, T>;
+//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T>;
 //     // the accumulator gets passed by the user facing function, to insert the results.
-//     //fn seq(self, to_pharse: &'a str, accumulator: Vec<T>) -> PharseResult<'a, Vec<T>>;
+//     //fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>>;
 //     // returns the length of the tuple
 //     //fn len(self) -> isize;
 // }
 // // implementation for alt on a single element of a tuple (for this simple function, it is a bit of an overkill, but it makes sense for seq)
-// fn singleton_alt<'a, T, P>(to_pharse: &'a str, pharser: P) -> PharseResult<'a, T>
+// fn singleton_alt<'a, T, P>(to_parse: &'a str, pharser: P) -> ParseResult<'a, T>
 // where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> PharseResult<'a, T>,
+//     P: Fn(&'a str) -> ParseResult<'a, T>,
 // {
-//     pharser(to_pharse)
+//     pharser(to_parse)
 // }
-// fn singelton_seq<'a, 'b, T, P>(to_pharse: &'a str, pharser: P, mut accumulator: Vec<T>) -> PharseResult<'a, Vec<T>>
+// fn singelton_seq<'a, 'b, T, P>(to_parse: &'a str, pharser: P, mut accumulator: Vec<T>) -> ParseResult<'a, Vec<T>>
 // where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> PharseResult<'a, T>,
+//     P: Fn(&'a str) -> ParseResult<'a, T>,
 // {
 //     let result : T;
-//     let to_pharse_tail: &str;
-//     (result, to_pharse_tail) = pharser(to_pharse)?;
+//     let to_parse_tail: &str;
+//     (result, to_parse_tail) = pharser(to_parse)?;
 //     accumulator.push(result);
-//     Ok((accumulator, to_pharse_tail))
+//     Ok((accumulator, to_parse_tail))
 // }
 
 // // implement the trait for singleton tuple of pharsers
 // impl<'a, T, P> Parsable<'a, T> for (P,)
 // where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> PharseResult<'a, T>,
+//     P: Fn(&'a str) -> ParseResult<'a, T>,
 // {
 //     // base case
-//     fn alt(self, to_pharse: &'a str) -> PharseResult<'a, T> {
-//         singleton_alt(to_pharse, self.0) // call the function on the last tuple entry
+//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T> {
+//         singleton_alt(to_parse, self.0) // call the function on the last tuple entry
 //     }
-//     // fn seq(self, to_pharse: &'a str, accumulator: Vec<T>) -> PharseResult<'a, Vec<T>> {
+//     // fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>> {
 //     //     // a little bit weird that this works, because the passed accumulator isn't necessary mutable? -> but it gets moved into here, so I guess I've got full control...
-//     //     singelton_seq(to_pharse, self.0, accumulator)
+//     //     singelton_seq(to_parse, self.0, accumulator)
 //     // }
 // }
 // // implement the trait for all other tuples
 // impl<'a, T, P, Rest> Parsable<'a, T> for (P, Rest)
 // where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> PharseResult<'a, T>,
+//     P: Fn(&'a str) -> ParseResult<'a, T>,
 //     Rest: Parsable<'a, T>,
 // {
 //     // recursive case
-//     fn alt(self, to_pharse: &'a str) -> PharseResult<'a, T> {
-//         match singleton_alt(to_pharse, self.0) { // apply first pharser
+//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T> {
+//         match singleton_alt(to_parse, self.0) { // apply first pharser
 //             ok @ Ok(_) => ok, // More elegant form of Ok(a) => Ok(a), because we don't repack a.
-//             Err(_) => self.1.alt(to_pharse) // apply the next pharser
+//             Err(_) => self.1.alt(to_parse) // apply the next pharser
 //         }
 //     }
-//     // fn seq(self, to_pharse: &'a str, accumulator: Vec<T>) -> PharseResult<'a, Vec<T>> {
+//     // fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>> {
 //     //     // let result : T;
-//     //     // let to_pharse_tail: &str;
-//     //     // (result, to_pharse_tail) = (self.0)(to_pharse)?;
+//     //     // let to_parse_tail: &str;
+//     //     // (result, to_parse_tail) = (self.0)(to_parse)?;
 //     //     // accumulator.push(result);
-//     //     let (accumulator, to_pharse_tail) = singelton_seq(to_pharse, self.0, accumulator)?;
+//     //     let (accumulator, to_parse_tail) = singelton_seq(to_parse, self.0, accumulator)?;
 //     //     // also do the rest of the tuple
-//     //     Ok(self.1.seq(to_pharse_tail, accumulator)?)
+//     //     Ok(self.1.seq(to_parse_tail, accumulator)?)
 //     // }
 // }
 // // implement as a function
-// fn alt<'a, T, Parsers>(to_pharse: &'a str, parsers: Parsers) -> PharseResult<'a, T> 
+// fn alt<'a, T, Parsers>(to_parse: &'a str, parsers: Parsers) -> ParseResult<'a, T> 
 // where
 //     Parsers: Parsable<'a, T>,   
 // {
-//     parsers.alt(to_pharse)
+//     parsers.alt(to_parse)
 // }
-// fn seq<'a, 'b, T, Parser>(to_pharse: &'a str, parsers: Parser) -> PharseResult<'a, Vec<T>>
+// fn seq<'a, 'b, T, Parser>(to_parse: &'a str, parsers: Parser) -> ParseResult<'a, Vec<T>>
 // where
 //     Parser: Parsable<'a, 'b, T>
 // {
 //     let accumulator: Vec<T> = Vec::with_capacity(10);
-//     let (filled_accumulator, to_pharse_tail)  = parsers.seq(to_pharse, accumulator)?;
-//     Ok((filled_accumulator, to_pharse_tail))
+//     let (filled_accumulator, to_parse_tail)  = parsers.seq(to_parse, accumulator)?;
+//     Ok((filled_accumulator, to_parse_tail))
 //     //Err("not implemented yet")
 // }
 
@@ -211,12 +214,18 @@ impl<P> Countable for [P]
 }
 
 /// returns the result of the first succeding pharser
-fn alt<'a, T>(to_pharse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> PharseResult<'a, T>>) -> PharseResult<'a, T>
+pub fn alt<'a, T>(to_parse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> ParseResult<'a, T>>) -> ParseResult<'a, T>
 {
     let pharser = &pharsers[0];
-    match pharser(to_pharse) {
+    match pharser(to_parse) {
         Ok(a) => Ok(a),
-        Err(_) => alt(to_pharse, pharsers[1..].to_vec()),
+        Err(_) => {
+            if pharsers.len() > 1 {
+                alt(to_parse, pharsers[1..].to_vec())
+            } else {
+                Err("none of the provided parsers matched".to_string())
+            }
+        },
     }
 }
 
@@ -228,10 +237,10 @@ fn alt<'a, T>(to_pharse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> PharseResult
 // maybe it is possible to implement this with a macro?
 /// takes the output of the first pharser as input for the next
 // actually it might be a good thing to not let the compiler generate a new seq function for each pharser that the program passes into it
-fn seq<'a, 'b, T>(to_pharse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> PharseResult<'a, T>>) -> PharseResult<'a, Vec<T>>
+pub fn seq<'a, 'b, T>(to_parse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> ParseResult<'a, T>>) -> ParseResult<'a, Vec<T>>
 {
     let mut results: Vec<T> = Vec::with_capacity(pharsers.len());
-    let mut remaining: &str = to_pharse;
+    let mut remaining: &str = to_parse;
     for pharser in pharsers {
         let result : T;
         (result, remaining) = pharser(remaining)?;
@@ -239,32 +248,31 @@ fn seq<'a, 'b, T>(to_pharse: &'a str, pharsers: Vec<&dyn Fn(&'a str) -> PharseRe
     }
     Ok((results, remaining))
 }
-/// removes spaces at the beginning of the input
-/// This pharser also succeeds if there is no space
-fn space<'a>(to_pharse: &'a str) ->PharseResult<'a, String> {
-    many(to_pharse, |input| item_satisfies(input, |x| x.is_whitespace()))
+/// removes whitespaces at the beginning of the input.
+/// whitespaces are determined by rusts is_whitespace method on characters.
+/// This pharser also succeeds if there is no space.
+/// returns the removed whitespaces.
+pub fn space<'a>(to_parse: &'a str) ->ParseResult<'a, String> {
+    many(to_parse, |input| item_satisfies(input, |x| x.is_whitespace()))
 }
 // now it starts to get language specific! //////////////////////////////////////////
 // The following pharsers care about space before and after them.
 
-/// Pharses natural numbers up to 2^31 - 1 (that's the max i32)
-fn nat<'a>(to_pharse: &'a str) -> PharseResult<'a, i32> {
-    match some(to_pharse, digit) {
-        Ok((number_string, to_pharse_tail)) => {
-            match number_string.parse::<i32>() {
-                Ok(number) => Ok((number, to_pharse_tail)),
-                Err(msg) => Err(format!("Failed to pharse number made of numbers (probably too big). \n The error when converting to a number was: {}", msg.to_string())),
-            }
-        },
-        Err(_) => todo!(),
+/// Pharses natural numbers up to 2^63 - 1 (that's the max i64)
+pub fn nat<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
+    match some(to_parse, digit) {
+        ok @ Ok(_) => ok,
+        Err(_) => Err(format!("expected a number, found {}", item(to_parse)?.0)), // this line will propagate the end of file error message, if item fails
     }
 }
+
+
 /// Pharses identifiers: string of characters, terminatet by any non alphanumeric
-fn sym<'a>(to_pharse: &'a str) -> PharseResult<'a, String> {
+pub fn sym<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
     let pharser_result = {
-        let (a, to_pharse) = some(to_pharse, alphabetic)?;
-        let (b, to_pharse) = many(to_pharse, alphanumeric)?;
-        Ok((format!("{a}{b}"), to_pharse))
+        let (a, to_parse) = some(to_parse, alphabetic)?;
+        let (b, to_parse) = many(to_parse, alphanumeric)?;
+        Ok((format!("{a}{b}"), to_parse))
     };
     match pharser_result {
         ok @ Ok(_) => ok,
@@ -272,16 +280,60 @@ fn sym<'a>(to_pharse: &'a str) -> PharseResult<'a, String> {
     }
 }
 
+pub fn operator<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
+    let pharser_result = {
+        let (a, to_parse) = some(to_parse, non_alphanumeric)?;
+        Ok((a, to_parse))
+    };
+    match pharser_result {
+        ok @ Ok(_) => ok,
+        Err(_) => Err("expected non alphanumeric.".to_string()),
+    }
+}
+
 /// applies the given parser to some token surrounded by whitespace
 /// in other words in this string: "  abc   hello" it would check if "abc" gives a result from the parser.
 /// If that parser would suceed (as for example the alphabetic pharser would) it returns "hello" as the . 
-fn token<'a, P, T>(to_pharse: &'a str, pharser: P) -> PharseResult<'a, String>
-where P: Fn(&str) -> PharseResult<'a, T>, T: ToString
+pub fn token<'a, P, T>(to_parse: &'a str, pharser: P) -> ParseResult<'a, String>
+where P: Fn(&'a str) -> ParseResult<'a, T>, T: ToString
 {
-    let (_, to_pharse) = many(to_pharse, space).expect("The many pharser should never be able to fail. Something has gone horribly wrong.");
-    let (my_token, to_pharse) = some(to_pharse, pharser)?;
-    let (_, to_pharse) = many(to_pharse, space).expect("the many pharser can't fail, something has gone horribly wrong");
-    Ok((my_token, to_pharse))
+    let (_, to_parse) = space(to_parse)?; // space parser can't fail.
+    let (my_token, to_parse) = some(to_parse, pharser)?;
+    let (_, to_parse) = space(to_parse)?; // space parser can't fail
+    Ok((my_token, to_parse))
+}
+
+/// takes a parser, whose sucess is optional.
+/// On sucess, the returned to_parse string will be returned
+/// otherwise the provided to_parse string gets returned unchanged.
+/// If the parser suceeds, its returned value will be applied to S
+/// else the this function returns the default argument
+/// # Examples
+/// Check if the next character in to_parse is a minussign,
+/// The following value (which is parsed later) is negative.
+/// ```
+/// to_parse = "-25"
+/// let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false)?;
+/// assert_eq!(is_negative, true);
+/// ````
+pub fn optional<'a, P, S, T, R>(to_parse: &'a str, parser: P, sucess_fn: S, default: R) -> ParseResult<'a, R> 
+where P: Fn(&'a str) -> ParseResult<'a, T>, S: Fn(&'a str, T) -> ParseResult<'a, R>
+{
+    match parser(to_parse) {
+        Ok((parse_result, to_parse)) => {
+            (sucess_fn(to_parse, parse_result))
+        },
+        Err(_) => Ok((default, to_parse)),
+    }
+}
+
+/// maps the result of the given parser to the given function. Fails if the parser fails.
+pub fn map<'a, P, S, T, R>(to_parse: &'a str, parser: P, sucess_fn: S) -> ParseResult<'a, R>
+where P: Fn(&'a str) -> ParseResult<'a, T>, S: Fn(T) -> R
+{
+    let (res, to_parse) = parser(to_parse)?;
+    Ok((sucess_fn(res),
+    to_parse))
 }
 
 fn internal_testing() {
@@ -336,11 +388,12 @@ mod tests {
         assert_eq!(Ok(("hello".to_string(), "15ducks")), result)
     }
     #[test]
-    /// This test shall fail in the future, because I want to change the error message to be more specific
+    /// This test shall fail in the future, because I want to change the error message to be even more specific
+    /// (position of the failure)
     fn test_some_failure() {
         let input = "15ducks";
         let result = some(input, alphabetic);
-        assert_eq!(Err("character doesn't fulfill predicate".to_string()), result)
+        assert_eq!(Err("character '1' doesn't fulfill predicate".to_string()), result)
     }
     #[test]
     fn test_alt() {
