@@ -4,7 +4,7 @@ mod pharsers;
 use std::{collections::HashMap, fmt::Display};
 
 use numbersystem::Number;
-use pharsers::{ParseResult, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item};
+use pharsers::{ParseResult, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item, within};
 
 use crate::numbersystem::Unit;
 
@@ -103,10 +103,10 @@ fn main() {
 
     // pretty print the environment
     for (key, value) in &env_tracker {
-        println!("variable name: {key}, \nvalue: {}", value);
+        println!("variable name: {key}, \n\tvalue: {}", value);
         let result = value.evaluate(&env_tracker);
         match result {
-            Ok(num) => println!("evaluates to: {num}"),
+            Ok(num) => println!("\tevaluates to: {num}"),
             Err(msg) => println!("evaluation failed with error: {msg}"),
         }
     }
@@ -203,18 +203,18 @@ fn number<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
     let (_, to_parse) = space(to_parse)?;
     // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
     let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
-    println!("base: {:?}, exponent: {:?}", base, exponent);
+    //println!("base: {:?}, exponent: {:?}", base, exponent);
     // this is temporary, until I rework how values are stored (don't really fancy using floats)
     let value = {
         let comma_digits:u32 = (base.2).to_string().len() as u32;
         let divisor = (i32::pow(10, comma_digits)) as f64;
-        println!("base.1 as f: {}, base.2 as f: {}, divisor: {}", base.1 as f64, base.2 as f64, divisor);
+        //println!("base.1 as f: {}, base.2 as f: {}, divisor: {}", base.1 as f64, base.2 as f64, divisor);
         let base_value = (base.1 as f64 + (base.2 as f64)/divisor) * if base.0 {-1.0} else {1.0};
         
         let exp_comma_digits:u32 = (exponent.2).to_string().len() as u32;
         let exp_divisor = (i32::pow(10, exp_comma_digits)) as f64;
         let exponent_value = (exponent.1 as f64 + (exponent.2 as f64)/exp_divisor) * if exponent.0 {-1.0} else {1.0};
-        println!("base_value: {}, exponent_value: {}", base_value, exponent_value);
+        //println!("base_value: {}, exponent_value: {}", base_value, exponent_value);
         base_value * f64::powf(10.0, exponent_value)
     };
     // convert the collected information into the numbersystem::Number type.
@@ -236,10 +236,12 @@ fn parse_assignment<'a, 'b>(to_parse: &'a str, mut env_tracker: Environment) -> 
 }
 fn parse_expression<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
     let (_, to_parse) = space(to_parse)?;
+    // TODO: put this into a function, because this code is used twice
     let (first, to_parse) = alt(to_parse, vec![
     &number,
     &|x|map(x, sym, |sym|Term::Var(sym)), // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
-    &parse_function,
+    &parse_function, // when implemented, this (probably) has to happen before symbol parsing
+    &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
     // TODO: parse single operator function and stuff like sqrt_3(5)
     ])?;
 
@@ -269,6 +271,7 @@ fn parse_expression<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
             &number,
             &|x|map(x, sym, |sym|Term::Var(sym)), // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
             &parse_function,
+            &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
             ])?; // if this parser fails, the expession ends with a operator which is invalid.
         
         let (_, to_parse) = space(to_parse)?;

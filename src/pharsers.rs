@@ -49,8 +49,10 @@ fn digit<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
 fn alphanumeric<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
     item_satisfies(to_parse, |x|x.is_alphanumeric())
 }
-fn non_alphanumeric<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
-    item_satisfies(to_parse, |x: char| !x.is_alphanumeric() && !x.is_whitespace())
+fn valid_operator<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
+    item_satisfies(to_parse, |x: char|   !x.is_alphanumeric() &&
+                                                    !x.is_whitespace() &&
+                                                    !(x == '(') && !(x == ')'))
 }
 
 fn upper<'a>(to_parse: &'a str) -> ParseResult<'a, char> {
@@ -282,7 +284,7 @@ pub fn sym<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
 
 pub fn operator<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
     let pharser_result = {
-        let (a, to_parse) = some(to_parse, non_alphanumeric)?;
+        let (a, to_parse) = some(to_parse, valid_operator)?;
         Ok((a, to_parse))
     };
     match pharser_result {
@@ -334,6 +336,20 @@ where P: Fn(&'a str) -> ParseResult<'a, T>, S: Fn(T) -> R
     let (res, to_parse) = parser(to_parse)?;
     Ok((sucess_fn(res),
     to_parse))
+}
+
+/// uses content_parser on the input until whatever closing_parser matches, if to_parse starts with something which opeining_parser matches.
+/// Used to parse content withing brackets.
+pub fn within<'a, O, T, C, Po, P, Pc>(to_parse: &'a str, opening_parser: Po, content_parser: P, closing_parser: Pc) -> ParseResult<'a, T>
+where
+Po: Fn(&'a str) -> ParseResult<'a, O>,
+P: Fn(&'a str) -> ParseResult<'a, T>,
+Pc: Fn(&'a str) -> ParseResult<'a, C>,
+{
+    let (_, to_parse) = opening_parser(to_parse)?; // when this fails, the whole parser fails
+    let (content, to_parse) = content_parser(to_parse)?;
+    let (_, to_parse) = closing_parser(to_parse)?;
+    Ok((content, to_parse))
 }
 
 fn internal_testing() {
