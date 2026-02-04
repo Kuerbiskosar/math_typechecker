@@ -1,5 +1,5 @@
 use crate::numbersystem::Number;
-use crate::term::{Term, Environment, Operator};
+use crate::term::{PTerm, Term, Environment, Operator};
 use crate::pharsers::{ParseResult, Parsable, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
 /// In this module, the language specific parsers are defined, to generate Terms etc.
@@ -100,8 +100,9 @@ fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
 /// If no unit is provided, the number is unitless 5 [-]
 /// TODO: Complex numbers should be parsed by this too.
 /// TODO: binary and hex representation would be cool.
-fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
+fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let (_, to_parse) = space(to_parse)?;
+    let number_star_pos = to_parse.span.start;
     let (base,  to_parse) = fin_rational(to_parse)?;
 
     // parsing of exponent notation
@@ -109,6 +110,7 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
     let (_, to_parse) = space(to_parse)?;
     // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
     let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
+    let number_end_pos = to_parse.span.start;
     //println!("base: {:?}, exponent: {:?}", base, exponent);
     // this is temporary, until I rework how values are stored (don't really fancy using floats)
     let value = {
@@ -128,8 +130,8 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
         value: value,
         unit: Unit::unitless(), // TODO: parse unit
     });
-
-    Ok((term, to_parse))
+    let p_term = PTerm{ content: term, span: Span{ start: number_star_pos, end: number_end_pos } };
+    Ok((p_term, to_parse))
 }
 
 // language specific pharsing
@@ -142,25 +144,26 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, mut env_tracker: Environ
     let exists = env_tracker.insert(var.clone(), expression); // TODO: At some point I want to give information, if a variable was overwritten. that probably extends the return type of this function
     let to_parse = match exists {
         Some(overwritten) => to_parse.add_error(Info {
-            msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten),
+            // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
+            msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten.content),
             pos: Span{start: var_start_pos, end: var_end_pos},
         }),
         None => to_parse,
     };
     Ok((env_tracker, to_parse))
 }
-fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
+fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let (_, to_parse) = space(to_parse)?;
     // TODO: put this into a function, because this code is used twice
     let (first, to_parse) = alt(to_parse, vec![
     &number,
-    &|x|map(x, sym, |sym|Term::Var(sym)), // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
+    &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
     &parse_function, // when implemented, this (probably) has to happen before symbol parsing
     &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
     // TODO: parse single operator function and stuff like sqrt_3(5)
     ])?;
 
-    fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: Term) -> ParseResult<'a, Term> {
+    fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: PTerm) -> ParseResult<'a, PTerm> {
         let (_, to_parse) = space(to_parse)?;
         // get the next operator, to be able to assemble right and left term
         let shallow_parser = ShallowParser::new(&to_parse);
@@ -170,14 +173,18 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
         };
         let (second, to_parse) = parse_expression_rhs(to_parse.restore(shallow_parser))?;
         
-        let recursive_first = Term::DuOp(Box::new(first), op1, Box::new(second));
-        // TODO: change return type to a Term type with span information
+        let span_start = first.span.start;
+        let span_end = second.span.end;
+        let recursive_first = PTerm{
+            content: Term::DuOp(Box::new(first), op1, Box::new(second)),
+            span: Span{ start: span_start, end: span_end }
+        };
         parse_expression_prime(to_parse, recursive_first)
     }
 
     /// gets the left hand side, given a string containing op1 num op2 num ...
     /// This could be num or num op2 num..., depending on the precedence and associativity of op1 and op2.
-    fn parse_expression_rhs<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
+    fn parse_expression_rhs<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         // to parse contains _ op1 n2 op2 n3 ...
         // note that this parser MUST suceed (for now), because it was already applied sucessfully with the same inputin parse_expression_prime
         // we just apply it again, to get the first operator.
@@ -186,7 +193,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
         // to parse contains _ _ n2 op2 n3 ...
         let (second, to_parse) = alt(to_parse, vec![
             &number,
-            &|x|map(x, sym, |sym|Term::Var(sym)), // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
+            &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
             &parse_function,
             &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
             ])?; // if this parser fails, the expession ends with a operator which is invalid.
@@ -207,8 +214,10 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
                     // (notice how we don't update to_parse, when parsing op2)
                     // here, parse expression should output 3^2, as that's the left hand side of op2.
                     let (third, to_parse) = parse_expression_rhs(modified_to_parse.restore(shallow_parser))?;
+                    let span_start = second.span.start;
+                    let span_end = third.span.end;
                     let term = Term::DuOp(Box::new(second), op2, Box::new(third));
-                    Ok((term, to_parse))
+                    Ok((PTerm{content: term, span: Span{ start: span_start, end: span_end } }, to_parse))
                 }
             },
             Err((to_parse, _)) => {
@@ -241,10 +250,15 @@ fn check_left_associative(op1:&Operator, op2:&Operator) -> bool {
     }
 }
 
+fn parse_variable<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
+    let var_start = to_parse.span.start;
+    let (var, to_parse) = map(to_parse, sym, |sym|Term::Var(sym))?;
+    Ok((PTerm{ content: var, span: Span { start: var_start, end: to_parse.span.start }}, to_parse))
+}
 fn parse_infix_op<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Operator> {
     map( to_parse, operator, |op|Operator::Infix(op))
 }
-fn parse_function<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
+fn parse_function<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     // parse symbol (function name), parse opening paranthesis, parse the arguments inside the paranthesis with parse expression.
     // the arguments are delimited with "," (probably. This is another reason to not use commas as a thousands sign)
     
@@ -281,6 +295,8 @@ mod tests {
             value: -123.4565,
             unit: Unit::unitless(), // TODO: parse unit
         });
-        assert_eq!(left, Ok((term, Parsable::with_str_offset("", 14))));
+        let expected_result = Ok((PTerm{ content: term, span: Span { start: 0, end: 14 } },
+            Parsable::with_str_offset("", 14)));
+        assert_eq!(left, expected_result);
     }
 }

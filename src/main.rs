@@ -22,11 +22,11 @@ fn main() {
 
     // pretty print the environment
     for (key, value) in &env_tracker {
-        println!("variable name: {key}, \n\tvalue: {}", value);
+        println!("variable name: {key}, \n\tvalue: {}", value.content);
         let result = value.evaluate(&env_tracker);
         match result {
             Ok(num) => println!("\tevaluates to: {num}"),
-            Err(msg) => println!("evaluation failed with error: {msg}"),
+            Err(msg) => println!("evaluation failed with error: {msg:?}"),
         }
     }
 }
