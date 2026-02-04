@@ -1,12 +1,12 @@
 mod numbersystem;
 mod pharsers;
 
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, net::ToSocketAddrs};
 
 use numbersystem::Number;
-use pharsers::{ParseResult, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item, within};
+use pharsers::{ParseResult, Parsable, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item, within};
 
-use crate::numbersystem::Unit;
+use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
 
 
 // language implementation!
@@ -98,7 +98,7 @@ fn main() {
     println!("{}", contents);
     let mut env_tracker = HashMap::default();
     for line in contents.lines() {
-        (env_tracker, _) = parse_assignment(line, env_tracker).expect("failed to parse");
+        (env_tracker, _) = parse_assignment(Parsable::with_string(line), env_tracker).expect("failed to parse");
     }
 
     // pretty print the environment
@@ -118,14 +118,14 @@ fn main() {
 /// 
 /// # Examples
 /// ```
-/// let to_parse = "123'456 6554 is a number"
+/// let to_parse = Parsable::with_string("123'456 6554 is a number");
 /// (result, tail) = separated_digits(to_parse).unwrap();
 /// assert_eq!(result, 1235466554);
 /// assert_eq!(tail, " is a number"); 
 /// ```
 /// according to [this](https://en.wikipedia.org/wiki/Decimal_separator) wikipedia entry (under Examples of use) the ' separator is only used in Switzerland, Liechtenstein and Italy
 /// but whatever.
-fn separated_digits<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
+fn separated_digits<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     let (a, to_parse) = nat(to_parse)?;
     // zero or less grouping symbols (valid grouping symbols are space and ')
     let (_, to_parse) = many(to_parse,|x|alt(x, vec![&|x|char(x,' '), &|x|char(x,'\'')]))?;
@@ -149,20 +149,31 @@ fn separated_digits<'a>(to_parse: &'a str) -> ParseResult<'a, String> {
 /// 5.6 -> (false, 5, 6)
 /// -3.1 -> (true, 3, 1)
 /// Note: i considered having the first number be negative, if the sign is negative, but that won't work for -0.5 (for zero)
-fn fin_rational<'a>(to_parse: &'a str) -> ParseResult<'a, (bool, i64, i64)> {
+fn fin_rational<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
     let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false)?;
     // parse digits, which may be separated by a space or a apostrophe (')
+    let original_parsable = ShallowParser::new(&to_parse);
     let (number_string, to_parse) = separated_digits(to_parse)?;
     // convert a numberstring into an actual number
     let left = match number_string.parse::<i64>() {
         Ok(number) => number,
-        Err(msg) => return Err(format!("Failed to pharse number made of numbers (probably too big). \n The error when converting to a number was: {}", msg.to_string())),
+        Err(convert_msg) => {
+            let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
+            \n The error when converting to a number was: {}", convert_msg.to_string()),
+            pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
+            return Err((to_parse.restore(original_parsable), info))
+        }
     };
 
     let (number_string, to_parse) = optional(to_parse, |x|alt(x, vec![&|x|char(x,'.'), &|x|char(x,',')]), |x,_|separated_digits(x), "0".to_string())?;
     let right = match number_string.parse::<i64>() {
         Ok(number) => number,
-        Err(msg) => return Err(format!("Failed to pharse number made of numbers (probably too big). \n The error when converting to a number was: {}", msg.to_string())),
+        Err(convert_msg) => {
+            let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
+            \n The error when converting to a number was: {}", convert_msg.to_string()),
+            pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
+            return Err((to_parse.restore(original_parsable), info))
+        }
     };
     Ok(((is_negative, left, right), to_parse))
 }
@@ -172,11 +183,16 @@ fn fin_rational<'a>(to_parse: &'a str) -> ParseResult<'a, (bool, i64, i64)> {
 /// 
 /// `
 /// 123 e12 kg -> space and e12 get parsed (space is optional)
-fn e_notation<'a>(to_parse: &'a str) -> ParseResult<'a, (bool, i64, i64)> {
+fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
     let (_, to_parse) = space(to_parse)?; // can't fail
     let (_, to_parse) = match alt(to_parse, vec![&|x|char(x, 'e'), &|x|char(x, 'E')]) {
         Ok(res) => res,
-        Err(_) => return Err(format!("expected either e or E, found {}", item(to_parse)?.0)), // this line will propagate the end of file error message, if item fails
+        Err((parsable, info)) => { // Note: some more convenient way to get the unexpected character would be nice
+            // rebuild the parsable, to avoid cloning the whole information vectors.
+            let next_item = parsable.get_next_char();
+            let info = Info {msg: format!("expected either e or E, found {}", next_item), pos: info.pos};
+            return Err((parsable, info))
+        }
     };
     fin_rational(to_parse)
 }
@@ -194,7 +210,7 @@ fn e_notation<'a>(to_parse: &'a str) -> ParseResult<'a, (bool, i64, i64)> {
 /// If no unit is provided, the number is unitless 5 [-]
 /// TODO: Complex numbers should be parsed by this too.
 /// TODO: binary and hex representation would be cool.
-fn number<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
+fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
     let (_, to_parse) = space(to_parse)?;
     let (base,  to_parse) = fin_rational(to_parse)?;
 
@@ -227,14 +243,23 @@ fn number<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
 }
 
 // language specific pharsing
-fn parse_assignment<'a, 'b>(to_parse: &'a str, mut env_tracker: Environment) -> ParseResult<'a, Environment> {
+fn parse_assignment<'a, 'b>(mut to_parse: Parsable<'a>, mut env_tracker: Environment) -> ParseResult<'a, Environment> {
+    let var_start_pos = to_parse.span.start;
     let (var, to_parse) = token(to_parse, sym)?;
+    let var_end_pos = to_parse.span.start;
     let (_, to_parse) = token(to_parse, |x|char(x, '='))?;
     let (expression, to_parse) = parse_expression(to_parse)?;
-    env_tracker.insert(var, expression); // TODO: At some point I want to give information, if a variable was overwritten. that probably extends the return type of this function
+    let exists = env_tracker.insert(var.clone(), expression); // TODO: At some point I want to give information, if a variable was overwritten. that probably extends the return type of this function
+    let to_parse = match exists {
+        Some(overwritten) => to_parse.add_error(Info {
+            msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten),
+            pos: Span{start: var_start_pos, end: var_end_pos},
+        }),
+        None => to_parse,
+    };
     Ok((env_tracker, to_parse))
 }
-fn parse_expression<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
+fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
     let (_, to_parse) = space(to_parse)?;
     // TODO: put this into a function, because this code is used twice
     let (first, to_parse) = alt(to_parse, vec![
@@ -245,22 +270,24 @@ fn parse_expression<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
     // TODO: parse single operator function and stuff like sqrt_3(5)
     ])?;
 
-    fn parse_expression_prime<'a>(to_parse: &'a str, first: Term) -> ParseResult<'a, Term> {
+    fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: Term) -> ParseResult<'a, Term> {
         let (_, to_parse) = space(to_parse)?;
         // get the next operator, to be able to assemble right and left term
-        let (op1, _) = match parse_infix_op(to_parse){
+        let shallow_parser = ShallowParser::new(&to_parse);
+        let (op1, to_parse) = match parse_infix_op(to_parse){
             Ok(ok) => ok,
-            Err(_) => return Ok((first, to_parse)), // if there is no operator, we reached the end of the expression
+            Err((to_parse, _)) => return Ok((first, to_parse)), // if there is no operator, we reached the end of the expression
         };
-        let (second, to_parse) = parse_expression_rhs(to_parse)?;
+        let (second, to_parse) = parse_expression_rhs(to_parse.restore(shallow_parser))?;
         
         let recursive_first = Term::DuOp(Box::new(first), op1, Box::new(second));
+        // TODO: change return type to a Term type with span information
         parse_expression_prime(to_parse, recursive_first)
     }
 
     /// gets the left hand side, given a string containing op1 num op2 num ...
     /// This could be num or num op2 num..., depending on the precedence and associativity of op1 and op2.
-    fn parse_expression_rhs<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
+    fn parse_expression_rhs<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
         // to parse contains _ op1 n2 op2 n3 ...
         // note that this parser MUST suceed (for now), because it was already applied sucessfully with the same inputin parse_expression_prime
         // we just apply it again, to get the first operator.
@@ -276,24 +303,25 @@ fn parse_expression<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
         
         let (_, to_parse) = space(to_parse)?;
         // to parse contains _ _ _ op2 n3 ...
+        let shallow_parser = ShallowParser::new(&to_parse);
         match parse_infix_op(to_parse) {
-            Ok((op2, _)) => {
+            Ok((op2, modified_to_parse)) => {
                 // check if op1 or op2 have higher precedence
                 // if they are equal, check their associativity
                 if check_left_associative(&op1, &op2) {
-                    Ok((second, to_parse)) // return the right hand side belonging to op1. The rest of the equation gets handled by parse_expression_prime
+                    Ok((second, modified_to_parse.restore(shallow_parser))) // return the right hand side belonging to op1. The rest of the equation gets handled by parse_expression_prime
                 } else {
                     // the next operator might be of even higher precedence.
                     // ex. 5+4*3^2
                     // at this point, the expression is parsed to _ op1(+) second * 3^2
                     // (notice how we don't update to_parse, when parsing op2)
                     // here, parse expression should output 3^2, as that's the left hand side of op2.
-                    let (third, to_parse) = parse_expression_rhs(to_parse)?;
+                    let (third, to_parse) = parse_expression_rhs(modified_to_parse.restore(shallow_parser))?;
                     let term = Term::DuOp(Box::new(second), op2, Box::new(third));
                     Ok((term, to_parse))
                 }
             },
-            Err(_) => {
+            Err((to_parse, _)) => {
                 // op2 doesn't exist -> end of equation
                 Ok((second, to_parse))
                 //Ok((Term::DuOp(Box::new(first), op1, Box::new(second)), to_parse))
@@ -323,14 +351,18 @@ fn check_left_associative(op1:&Operator, op2:&Operator) -> bool {
     }
 }
 
-fn parse_infix_op<'a>(to_parse: &'a str) -> ParseResult<'a, Operator> {
+fn parse_infix_op<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Operator> {
     map( to_parse, operator, |op|Operator::Infix(op))
 }
-fn parse_function<'a>(to_parse: &'a str) -> ParseResult<'a, Term> {
+fn parse_function<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Term> {
     // parse symbol (function name), parse opening paranthesis, parse the arguments inside the paranthesis with parse expression.
     // the arguments are delimited with "," (probably. This is another reason to not use commas as a thousands sign)
-    let _unused = to_parse;
-    Err("Function parsing is not yet implemented. This parse error happened, because the input might be a function.".to_string())
+    
+    let info = Info{
+        msg: "Function parsing is not yet implemented. This parse error happened, because the input might be a function.".to_string(),
+        pos: Span { start:to_parse.span.start, end: to_parse.span.start+1 }
+    };
+    Err((to_parse, info))
 }
 
 
@@ -340,26 +372,26 @@ mod tests {
 
     #[test]
     fn test_separated_digits() {
-        let to_parse = "5e10";
+        let to_parse = Parsable::with_string("5e10");
         let left = separated_digits(to_parse);
-        assert_eq!(left, Ok(("5".to_string(), "e10")));
+        assert_eq!(left, Ok(("5".to_string(), Parsable::with_str_offset("e10", 1))));
     }
     #[test]
     fn test_fin_rational() {
-        let to_parse = "-123'456.5 e-3";
+        let to_parse = Parsable::with_string("-123'456.5 e-3");
         let left = fin_rational(to_parse);
-        assert_eq!(left, Ok(((true, 123456, 5), "e-3")));
+        assert_eq!(left, Ok(((true, 123456, 5), Parsable::with_str_offset("e-3",11))));
     }
     #[test]
     fn test_number() {
-        let to_parse = "-123'456.5 e-3";
+        let to_parse = Parsable::with_string("-123'456.5 e-3");
         let left = number(to_parse);
 
         let term = Term::Num(Number {
             value: -123.4565,
             unit: Unit::unitless(), // TODO: parse unit
         });
-        assert_eq!(left, Ok((term, "")));
+        assert_eq!(left, Ok((term, Parsable::with_str_offset("", 14))));
     }
 }
 
