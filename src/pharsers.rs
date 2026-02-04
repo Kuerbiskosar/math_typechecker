@@ -61,7 +61,7 @@ impl<'a> Parsable<'a> {
     pub fn with_string(to_parse: &'a str) -> Parsable<'a>{
         Parsable {
             content: to_parse,
-            span: Span { start: 0, end: to_parse.chars().count()-1 },
+            span: Span { start: 0, end: to_parse.chars().count()},
             // Removal of entries into this field may only be done through the ShallowParser
             // The Idea is to restore a previous parsable state through the length of the vector
             // This has to be done, if a parser suceeds, but a subsequent parser step fails.
@@ -74,7 +74,7 @@ impl<'a> Parsable<'a> {
     pub fn with_str_offset(to_parse: &'a str, offset: usize) -> Parsable<'a> {
         Parsable {
             content: to_parse,
-            span: Span {start: offset, end: to_parse.chars().count()+offset-1},
+            span: Span {start: offset, end: to_parse.chars().count()+offset},
             information: InformationCollector { infos: Vec::new(), warnings: Vec::new(), errors: Vec::new() }
         }
     }
@@ -117,7 +117,7 @@ pub struct Info {
 
 
 // struct to track position of errors in the input string
-// start and end inclusive. start and end are the same for a span of one character.
+// end exclusive. start and end are the same for a span of ZERO characters (at the end of parsing).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Span {
     pub start: usize,
