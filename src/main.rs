@@ -3,9 +3,10 @@ mod term;
 mod pharsers;
 mod language_parsers;
 
-use std::collections::HashMap;
 use pharsers::Parsable;
-use language_parsers::parse_assignment;
+use language_parsers::parse_file;
+
+use crate::term::Environment;
 
 fn main() {
     //let file_path = std::env::args().nth(1).expect("no path given");
@@ -14,19 +15,22 @@ fn main() {
     let contents = std::fs::read_to_string(file_path)
         .expect("Should have been able to read the file");
     println!("{}", contents);
-    let mut env_tracker = HashMap::default();
-    for line in contents.lines() {
-        if line.chars().count() == 0 {continue};
-        (env_tracker, _) = parse_assignment(Parsable::with_string(line), env_tracker).expect("failed to parse");
-    }
+    let mut env_tracker = Environment::new();
 
-    // pretty print the environment
-    for (key, value) in &env_tracker {
-        println!("variable name: {key}, \n\tvalue: {}", value.content);
-        let result = value.evaluate(&env_tracker);
-        match result {
-            Ok(num) => println!("\tevaluates to: {num}"),
-            Err(msg) => println!("evaluation failed with error: {msg:?}"),
+    let to_parse = Parsable::with_string(&contents);
+    let (_, parsed) = parse_file(to_parse, &mut env_tracker);
+    let parse_errors = parsed.get_info().errors;
+
+    if parse_errors.len() > 0 {
+        println!("
+        ---------------------------------------
+        +       PARSE ERROR OCCURRED!!!       +
+        ---------------------------------------
+        ");
+        for err in parse_errors {
+            println!("{:?}", err);
         }
+        println!("---------------------------------------")
     }
+    env_tracker.evaluate_and_print_all_variables();
 }

@@ -1,17 +1,78 @@
-use crate::numbersystem::Number;
+use crate::numbersystem::{Number, Unit};
 use crate::pharsers::{Info, Span};
 use std::{collections::HashMap, fmt::Display};
 
-pub type Environment = HashMap<String, PTerm>;
+#[derive(Debug, Clone)]
+pub struct Environment {
+    // list of infix operators with their precedence, for term parsing purposes
+    infix_operators: String, // TODO: make datastructure for this
+    // holds all the terms defined in the program. They all get typechecked.
+    // todo make datastructure to hold evaluated value and type
+    // The following types hold the index of the term within this vector.
+    terms: Vec<PTerm>,
+    // lookup table for the terms assigned to variables
+    variables: HashMap<String, usize>,
+    // Holding pairs of terms which should be equal to each other.
+    equations: Vec<(usize, usize)>,
+    // Terms whose results should be displayed
+    to_evaluate: Vec<usize>,
+}
+
+impl Environment {
+    pub fn new() -> Environment {
+        Environment { infix_operators: "".to_string(), terms: Vec::new(), variables: HashMap::default(), equations: Vec::new(), to_evaluate: Vec::new() }
+    }
+    pub fn insert_variable(&mut self, var:String, expression: PTerm) -> Option<&PTerm>{
+        self.terms.push(expression);
+        let term_index = self.terms.len()-1;
+
+        let overwritten_term = self.variables.insert(var, term_index).clone();
+        match &overwritten_term {
+            Some(old_index) => Some(&self.terms[*old_index]),
+            None => None,
+        }
+    }
+    pub fn evaluate_and_print_all_variables(& mut self) {
+        // pretty print the environment
+        let iterator = self.variables.clone(); // cloned to not run into borrow issues
+        for (key, term_index) in iterator {
+            println!("variable name: {key}, \n\tvalue: {}", self.terms[term_index].content);
+            let result = self.evaluate_term(term_index);
+            match result {
+                Ok(num) => println!("\tevaluates to: {num}"),
+                Err(msg) => println!("evaluation failed with error: {msg:?}"),
+            }
+        }
+    }
+
+    fn evaluate_term(&mut self, term_index: usize) -> Result<Number, Vec<Info>> {
+        // check if that therm was already evaluated
+        match &self.terms[term_index].evaluated {
+            // I think cloning here is necessary, because we borrow a mutable reference.
+            Some(result) => return result.clone(),
+            None => {
+                let result = self.terms[term_index].first_evaluate(&self);
+                let output = result.clone();
+                self.terms[term_index].evaluated = Some(result);
+                output
+            },
+        }
+    }
+}
 
 /// Programming Term. It contains a mathematical term and metadata
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct PTerm {
     pub content: Term,
     pub span: Span,
+    // to prevent double evaluation of terms
+    evaluated: Option<Result<Number, Vec<Info>>>,
+    // to "typecheck" (compare the units of two terms which should be equal)
+    // chose unit instead of quantity, because it contains the quantity information.
+    unit: Option<Unit>,
 }
 // let's start by pharsing expressions
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Term {
     // DualOperators. Functions like + - * /, which take a right hand side and a left hand side.
     DuOp (
@@ -46,7 +107,11 @@ impl Display for Term {
 }
 
 impl PTerm {
-    pub fn evaluate(& self, env_tracker: &Environment) -> Result<Number, Vec<Info>> {
+    pub fn new(content: Term, span: Span) -> PTerm {
+        PTerm { content: content, span: span, evaluated: None, unit: None }
+    }
+    fn first_evaluate(& self, env_tracker: &Environment) -> Result<Number, Vec<Info>> {
+        // check if result was evaluated before TODO: actually write the evaluated result
         match &self.content {
             Term::DuOp(term1, operator, term2) => {
                 match operator {
@@ -58,8 +123,16 @@ impl PTerm {
                 }
             },
             Term::Var(sym) => {
-                match env_tracker.get(sym) {
-                    Some(term) => term.evaluate(env_tracker),
+                match env_tracker.variables.get(sym) {
+                    Some(term_index) => {
+                        match env_tracker.terms[*term_index].first_evaluate(env_tracker) {
+                            ok @ Ok(_) => ok,
+                            Err(mut info) => {
+                                info.push(Info{ msg: format!("variable {} failed to evaluate", sym), pos: self.span});
+                                Err(info)
+                            },
+                        }
+                    },
                     None => {
                         let info = Info { msg: format!("use of undefined variable '{}' (couldn't find it when evaluating the expression)", {sym}),
                                                 pos: self.span };
@@ -74,8 +147,8 @@ impl PTerm {
 
     fn evaluate_infix_op (&self, env_tracker: &Environment, op: &String, term1: &PTerm, term2: &PTerm) -> Result<Number, Vec<Info>> {
     // evaluate right and left hand side. Return error, if left or right fail.
-        let left = term1.evaluate(&env_tracker);
-        let right = term2.evaluate(&env_tracker);
+        let left = term1.first_evaluate(&env_tracker);
+        let right = term2.first_evaluate(&env_tracker);
         // if left or right failed, we don't divide, but return both error vectors merged.
         if left.is_err() || right.is_err() {
             let mut info= match left {
@@ -112,7 +185,7 @@ impl PTerm {
 }
 
 // this isn't expandable at runtime.
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Operator {
     Add,
     Sub,

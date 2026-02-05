@@ -82,12 +82,15 @@ impl<'a> Parsable<'a> {
         self.information.infos.push(info);
         self
     }
+    pub fn get_info(self) -> InformationCollector {
+        self.information
+    }
     pub fn add_warning(mut self, info: Info) -> Parsable<'a> {
-        self.information.infos.push(info);
+        self.information.warnings.push(info);
         self
     }
     pub fn add_error(mut self, info: Info) -> Parsable<'a> {
-        self.information.infos.push(info);
+        self.information.errors.push(info);
         self
     }
 
@@ -104,9 +107,9 @@ impl<'a> Parsable<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InformationCollector {
-    infos: Vec<Info>,
-    warnings: Vec<Info>,
-    errors: Vec<Info>
+    pub infos: Vec<Info>,
+    pub warnings: Vec<Info>,
+    pub errors: Vec<Info>
 }
 // Implements the three commonly used warning levels: info, warning and error.
 #[derive(Clone, Debug, PartialEq)]

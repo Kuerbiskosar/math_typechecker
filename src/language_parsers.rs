@@ -130,18 +130,34 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         value: value,
         unit: Unit::unitless(), // TODO: parse unit
     });
-    let p_term = PTerm{ content: term, span: Span{ start: number_star_pos, end: number_end_pos } };
+    let p_term = PTerm::new(term, Span{ start: number_star_pos, end: number_end_pos });
     Ok((p_term, to_parse))
 }
 
 // language specific pharsing
-pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, mut env_tracker: Environment) -> ParseResult<'a, Environment> {
+
+pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ((), Parsable<'a>) {
+    // let res = alt(to_parse, vec![
+    //     &|x|parse_assignment(x, env_tracker.clone())
+    // ]);
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = parse_assignment(to_parse, env_tracker);
+    //.or_else(|x|parse_expression(x)); // chain further parsers with .or_else (thought they need to return an ParseResult<'a, ()>, not like the parse_expression parser)
+
+    match res {
+        Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
+        Err((to_parse, _)) => ((), to_parse.restore(shallow_parser)),
+    }
+}
+/// parse variable assignments like a = 1+1 or b = a
+/// Doesn't return content in the ParseResult but adds the assingment to the env_tracker argument
+pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
     let var_start_pos = to_parse.span.start;
     let (var, to_parse) = token(to_parse, sym)?;
     let var_end_pos = to_parse.span.start;
     let (_, to_parse) = token(to_parse, |x|char(x, '='))?;
     let (expression, to_parse) = parse_expression(to_parse)?;
-    let exists = env_tracker.insert(var.clone(), expression); // TODO: At some point I want to give information, if a variable was overwritten. that probably extends the return type of this function
+    let exists = env_tracker.insert_variable(var.clone(), expression);
     let to_parse = match exists {
         Some(overwritten) => to_parse.add_error(Info {
             // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
@@ -150,7 +166,7 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, mut env_tracker: Environ
         }),
         None => to_parse,
     };
-    Ok((env_tracker, to_parse))
+    Ok(((), to_parse))
 }
 fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let (_, to_parse) = space(to_parse)?;
@@ -175,10 +191,8 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         
         let span_start = first.span.start;
         let span_end = second.span.end;
-        let recursive_first = PTerm{
-            content: Term::DuOp(Box::new(first), op1, Box::new(second)),
-            span: Span{ start: span_start, end: span_end }
-        };
+        let recursive_first = PTerm::new(Term::DuOp(Box::new(first), op1, Box::new(second)),
+            Span{ start: span_start, end: span_end });
         parse_expression_prime(to_parse, recursive_first)
     }
 
@@ -217,7 +231,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
                     let span_start = second.span.start;
                     let span_end = third.span.end;
                     let term = Term::DuOp(Box::new(second), op2, Box::new(third));
-                    Ok((PTerm{content: term, span: Span{ start: span_start, end: span_end } }, to_parse))
+                    Ok((PTerm::new(term, Span{ start: span_start, end: span_end } ), to_parse))
                 }
             },
             Err((to_parse, _)) => {
@@ -253,7 +267,7 @@ fn check_left_associative(op1:&Operator, op2:&Operator) -> bool {
 fn parse_variable<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let var_start = to_parse.span.start;
     let (var, to_parse) = map(to_parse, sym, |sym|Term::Var(sym))?;
-    Ok((PTerm{ content: var, span: Span { start: var_start, end: to_parse.span.start }}, to_parse))
+    Ok((PTerm::new(var, Span { start: var_start, end: to_parse.span.start }), to_parse))
 }
 fn parse_infix_op<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Operator> {
     map( to_parse, operator, |op|Operator::Infix(op))
@@ -295,7 +309,7 @@ mod tests {
             value: -123.4565,
             unit: Unit::unitless(), // TODO: parse unit
         });
-        let expected_result = Ok((PTerm{ content: term, span: Span { start: 0, end: 14 } },
+        let expected_result = Ok((PTerm::new(term, Span { start: 0, end: 14 } ),
             Parsable::with_str_offset("", 14)));
         assert_eq!(left, expected_result);
     }
