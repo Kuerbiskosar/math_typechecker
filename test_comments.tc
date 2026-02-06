@@ -1,0 +1,6 @@
+-- This is a comment
+a = 1+2
+-- This is another comment with Normal text style.
+-- The parser adds the StrikeThrough text style to comments which don't have a space
+-- after "--". Useful to uncomment faulty expressions
+--uncommented = 5 / 0

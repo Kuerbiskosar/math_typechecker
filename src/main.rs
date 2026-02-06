@@ -33,4 +33,5 @@ fn main() {
         println!("---------------------------------------")
     }
     env_tracker.evaluate_and_print_all_variables();
+    env_tracker.print_all_comment_locations();
 }

@@ -16,11 +16,21 @@ pub struct Environment {
     equations: Vec<(usize, usize)>,
     // Terms whose results should be displayed
     to_evaluate: Vec<usize>,
+
+    // everything which doesn't have to do with terms
+    texts: Vec<Text>,
 }
 
 impl Environment {
     pub fn new() -> Environment {
-        Environment { infix_operators: "".to_string(), terms: Vec::new(), variables: HashMap::default(), equations: Vec::new(), to_evaluate: Vec::new() }
+        Environment {
+            infix_operators: "".to_string(),
+            terms: Vec::new(),
+            variables: HashMap::default(),
+            equations: Vec::new(),
+            to_evaluate: Vec::new(),
+            texts: Vec::new()
+        }
     }
     pub fn insert_variable(&mut self, var:String, expression: PTerm) -> Option<&PTerm>{
         self.terms.push(expression);
@@ -32,17 +42,27 @@ impl Environment {
             None => None,
         }
     }
+    pub fn insert_text(&mut self, text:Text) {
+        self.texts.push(text);
+    }
     pub fn evaluate_and_print_all_variables(& mut self) {
         // pretty print the environment
         let iterator = self.variables.clone(); // cloned to not run into borrow issues
         for (key, term_index) in iterator {
-            println!("variable name: {key}, \n\tvalue: {}", self.terms[term_index].content);
+            println!("variable name: {key}, \n\tvalue: {}\n", self.terms[term_index].content);
             let result = self.evaluate_term(term_index);
             match result {
                 Ok(num) => println!("\tevaluates to: {num}"),
-                Err(msg) => println!("evaluation failed with error: {msg:?}"),
+                Err(msg) => println!("\tevaluation failed with error: {msg:?}"),
             }
         }
+    }
+    pub fn print_all_comment_locations(&self) {
+        println!("--- comment locations ---");
+        for comment in &self.texts {
+            println!("{:?}", comment)
+        }
+        println!("------")
     }
 
     fn evaluate_term(&mut self, term_index: usize) -> Result<Number, Vec<Info>> {
@@ -182,6 +202,27 @@ impl PTerm {
             Err(e) => Err(vec![Info{ msg: e, pos: self.span }]),
         }
     }
+}
+
+/// Everything which can't be evaluated is text. This struct serves to hold the position of such text
+/// to render it in a different font than the equations.
+#[derive(Debug, Clone)]
+pub struct Text {
+    pub text_type: TextType,
+    pub span: Span,
+}
+// to choose how to render the text
+#[derive(Debug, Clone)]
+pub enum TextType {
+    // Prosa text
+    Normal,
+    // I often use comments to stop compiler warnings of non-working code, which I want to fix later
+    // Such Terms should be visually striked through.
+    StrikeThrough,
+    // the usize declares the nesting level of the title starting at zero
+    // subsubsubtitle whould be SubTitle(3)
+    Title(usize),
+    
 }
 
 // this isn't expandable at runtime.

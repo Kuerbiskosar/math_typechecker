@@ -169,7 +169,7 @@ pub fn item<'a>(mut to_parse: Parsable<'a>) -> ParseResult<'a, char> {
     }
 }
 /// succeeds with the first character, if the character fulfills the predicate
-fn item_satisfies<'a, Predicate>(to_parse: Parsable<'a>, predicate: Predicate) -> ParseResult<'a, char> 
+pub fn item_satisfies<'a, Predicate>(to_parse: Parsable<'a>, predicate: Predicate) -> ParseResult<'a, char> 
 where
     Predicate: Fn(char) -> bool
 {
@@ -409,6 +409,10 @@ pub fn seq<'a, 'b, T>(to_parse: Parsable<'a>, pharsers: Vec<&dyn Fn(Parsable<'a>
 pub fn space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
     many(to_parse, |input| item_satisfies(input, |x| x.is_whitespace()))
 }
+/// sometimes there MUST be a space. This parser is a variant of the space parser, but it actually fails if there is no space.
+pub fn obligatory_space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
+    some(to_parse, |input| item_satisfies(input, |x| x.is_whitespace()))
+}
 // now it starts to get language specific! //////////////////////////////////////////
 // The following pharsers care about space before and after them.
 
@@ -426,6 +430,7 @@ pub fn nat<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
 
 
 /// Pharses identifiers: string of characters, terminatet by any non alphanumeric
+/// Must start with an alphabetic and can contain numbers
 pub fn sym<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     let pharser_result = {
         let (a, to_parse) = some(to_parse, alphabetic)?;
@@ -442,9 +447,45 @@ pub fn sym<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     }
 }
 
+/// suceeds if the given string is parsed
+/// Not returning the string, because the caller probably already has it (and he can definitely clone the input string)
+pub fn this_string<'a>(to_parse: Parsable<'a>, string: &str) -> ParseResult<'a, ()> {
+    // note: String::starts_with(&str) exists, but I want to reuse the char stripping from the item parser
+    let mut iterator = string.chars();
+    let next_char = match iterator.next() {
+        Some(x) => x,
+        None => return Ok(((), to_parse)), // every string begins with a empty string... technically
+    };
+    match char(to_parse, next_char) {
+        Ok((c, to_parse)) => match this_string(to_parse, iterator.as_str()) {
+            ok@Ok(_) => ok,
+            Err((to_parse, _)) => { // Note: this leads us to regenerate the error message for each character which originally matched.
+                let info = Info{msg: format!("Didn't find expected string '{}'", string), pos: Span { start: to_parse.span.start, end: to_parse.span.start+1 }};
+                return Err((to_parse, info))
+            },
+        },
+        Err((to_parse, _)) => {
+            let info = Info{msg: format!("Didn't find expected string '{}'", string), pos: Span { start: to_parse.span.start, end: to_parse.span.start+1 }};
+            return Err((to_parse, info))
+        },
+    }
+}
+
 pub fn operator<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     let pharser_result = {
+        let operator_start_pos = to_parse.span.start;
+        let shallow_parser = ShallowParser::new(&to_parse);
+        // Note: right now this doesn't allow any opening or closing brackets.
+        // I could change this to accept opening and closing brackets within an operator, but that introduces
+        // some edge cases like ""-(15)" accepting the opening bracket as an operator, which I don't want. 
         let (a, to_parse) = some(to_parse, valid_operator)?;
+        // check that the final parsed operator is valid
+        // todo: somehow have the comment symbol looked up, to change it at one place.
+        if a == "(" || a == ")" || a == "=" || a == "--" {
+            let operator_end_pos = to_parse.span.start;
+            return Err((to_parse.restore(shallow_parser), Info{ msg: format!("Expected an operator but got {} instead, which is a reserved symbol", a),
+                        pos: Span{ start: operator_start_pos, end: operator_end_pos } }))
+        }
         Ok((a, to_parse))
     };
     match pharser_result {

@@ -1,6 +1,6 @@
 use crate::numbersystem::Number;
-use crate::term::{PTerm, Term, Environment, Operator};
-use crate::pharsers::{ParseResult, Parsable, optional, alt, seq, some, many, map, space, sym, operator, token, char, nat, item, within};
+use crate::term::{Environment, Operator, PTerm, Term, Text, TextType};
+use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, nat, obligatory_space, operator, optional, seq, some, space, sym, this_string, token, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
 /// In this module, the language specific parsers are defined, to generate Terms etc.
 
@@ -134,6 +134,17 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     Ok((p_term, to_parse))
 }
 
+/// Comment from the beginning of the comment symbol to the end of the line
+fn line_comment<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Text> {
+    let start_pos = to_parse.span.start;
+    let (_, to_parse) = space(to_parse)?;
+    let (_, to_parse) = this_string(to_parse, "--")?;
+    let (text_type, to_parse) = optional(to_parse, obligatory_space, |x,_|Ok((TextType::Normal, x)), TextType::StrikeThrough)?;
+    let (_content, to_parse) = (many(to_parse, |x|item_satisfies(x, |c|c!= (0xA as char) ))).expect("many parser should never be able to fail");
+    let output = Text { text_type: text_type, span: Span { start: start_pos, end: to_parse.span.start } };
+    Ok((output, to_parse))
+}
+
 // language specific pharsing
 
 pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ((), Parsable<'a>) {
@@ -141,14 +152,35 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
     //     &|x|parse_assignment(x, env_tracker.clone())
     // ]);
     let shallow_parser = ShallowParser::new(&to_parse);
-    let res = parse_assignment(to_parse, env_tracker);
-    //.or_else(|x|parse_expression(x)); // chain further parsers with .or_else (thought they need to return an ParseResult<'a, ()>, not like the parse_expression parser)
+    let res = parse_assignment(to_parse, env_tracker)
+        .or_else(|(x, _)|parse_comment(x, env_tracker));
 
     match res {
         Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
-        Err((to_parse, _)) => ((), to_parse.restore(shallow_parser)),
+        Err((mut to_parse, info)) => {
+            // todo: check if we reached the end of the file
+            if to_parse.span.start != to_parse.span.end{
+                
+                let start = to_parse.span.start;
+                let end = to_parse.span.end;
+                let info = Info { msg: format!("Parser terminated unexpectedly with the error: {info:?})"),
+                        pos: Span{ start:start, end: end}
+                    };
+                to_parse = to_parse.add_error(info);
+            }
+            ((), to_parse.restore(shallow_parser))
+        }
+        //Err((to_parse, _)) => ((), to_parse.restore(shallow_parser)),
     }
 }
+
+fn parse_comment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()>{
+    let (text, to_parse) = line_comment(to_parse)?;
+
+    env_tracker.insert_text(text);
+    Ok(((),to_parse))
+}
+
 /// parse variable assignments like a = 1+1 or b = a
 /// Doesn't return content in the ParseResult but adds the assingment to the env_tracker argument
 pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
@@ -157,6 +189,9 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Env
     let var_end_pos = to_parse.span.start;
     let (_, to_parse) = token(to_parse, |x|char(x, '='))?;
     let (expression, to_parse) = parse_expression(to_parse)?;
+
+    // at this point in the function we start modifying the env_tracker.
+    // we can't return an error after this point, because that would leave the env_tracker in a bad state.
     let exists = env_tracker.insert_variable(var.clone(), expression);
     let to_parse = match exists {
         Some(overwritten) => to_parse.add_error(Info {
@@ -312,5 +347,19 @@ mod tests {
         let expected_result = Ok((PTerm::new(term, Span { start: 0, end: 14 } ),
             Parsable::with_str_offset("", 14)));
         assert_eq!(left, expected_result);
+    }
+    #[test]
+    fn newline_parsing() {
+        let file_path = "testfile.tc";
+        println!("pattern: {:?}", file_path);
+        let contents = std::fs::read_to_string(file_path)
+            .expect("Should have been able to read the file");
+        for char in contents.chars() {
+            if char == 0xA as char {
+                println!("got a newline character");
+                continue;
+            }
+            print!("<{}>", char.escape_unicode());
+        }
     }
 }

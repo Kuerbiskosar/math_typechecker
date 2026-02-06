@@ -1,9 +1,10 @@
+-- I can finally annotate this document! yay!
 f = 1/(2/(3/4))
-a = 5e10
+--a = 5e10
 b = -6
 c = 1 + 2 + 3
 d = 1/2/3/4
-e = 1+2 * 3
+eugh = 1+2 * 3 -- TODO: fix number parsing, wher an e following a number consumes the e.
 division = 5/0
 
 folgefehler = 7 + division
