@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 /*
     a pharser of things
   is a function from strings
@@ -117,6 +119,11 @@ pub struct Info {
     pub msg: String,
     pub pos: Span,
 }
+impl Info {
+    pub fn prettyprint(&self, full: &str) -> String {
+        format!("{} at {}", self.msg, self.pos.to_text_pos(&full))
+    }
+}
 
 
 // struct to track position of errors in the input string
@@ -126,12 +133,70 @@ pub struct Span {
     pub start: usize,
     pub end: usize
 }
+impl Span {
+    /// turns a span to human readable TextPos
+    /// Whilst span is zero indexed and has the end exclusive, TextPos starts with one (first line, first character)
+    /// and has the end character inclusive. This also means that if a span spans over zero characters,
+    /// the end position is one smaller than the start position.
+    pub fn to_text_pos(&self, full: &str) -> TextPos {
+        println!("{}, {}", self.start, self.end);
+        let mut char_array = full.chars();
+        let mut line_number: usize = 1;
+        let mut line_pos: usize = 1;
+        // make shure that start is smaller than end
+        let (start, end) = if self.start < self.end {(self.start, self.end)} else {(self.end, self.start)};
+        for _ in 0..start {
+            let current_char = match char_array.nth(0) {
+                Some(c) => c,
+                // this character only gets used to increase the line count. If we reached the end, we simply don't increase the line count.
+                // here could be any other character which isn't \n
+                None => ' ',
+            };
+            //println!("{:?}", current_char.escape_default().to_string());
+            if current_char == (0xA as char) {
+                line_number += 1;
+                line_pos = 1;
+            } else {
+                line_pos += 1;
+            }
+        }
+        let start_line = line_number;
+        let start_pos_in_line = line_pos;
+        // the same for the end position
+        for _ in start..end {
+            let current_char = match full.chars().nth(0) {
+                Some(c) => c,
+                // this character only gets used to increase the line count. If we reached the end, we simply don't increase the line count.
+                // here could be any other character which isn't \n
+                None => ' ',
+            };
+            if current_char == (0xA as char) {
+                line_number += 1;
+                line_pos = 1;
+            } else {
+                line_pos += 1;
+            }
+        }
+        let end_line = line_number;
+        let end_pos_in_line = line_pos-2;
+        TextPos{ start_line, start_pos_in_line, end_line, end_pos_in_line }
+    }
+}
 // struct to represent span in a human readable format
-struct TextPos {
-    start_line: usize,
-    start_pos_in_line: usize,
-    end_line: usize,
-    end_pos_in_line: usize
+pub struct TextPos {
+    pub start_line: usize,
+    pub start_pos_in_line: usize,
+    pub end_line: usize,
+    pub end_pos_in_line: usize
+}
+impl Display for TextPos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start_line == self.end_line {
+            write!(f, "line: {}, from {} to {}", self.start_line, self.start_pos_in_line, self.end_pos_in_line)
+        } else {
+            write!(f, "line: {}, from {} to line {} until {}", self.start_line, self.start_pos_in_line, self.end_line, self.end_pos_in_line)
+        }
+    }
 }
 
 /// returns (line number, position in line) beginning of the given string
@@ -251,120 +316,7 @@ where
     }
 }
 
-// this doesn't work. Once again, I was a fool to follow the advice of a large language model.
-// usually functions which take tuples of "arbitrary" length are limited to 12 entrys (the functions are built with macros).
-// This makes kind of sense, since using more than 12 elements in a tuple might be bad design, but using 12 pharsers in a row doesn't seem THAT unplausible.
-// trait to use tuples of functions in pharsers (for alt and seq)
-// trait Parsable<'a, T> {
-//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T>;
-//     // the accumulator gets passed by the user facing function, to insert the results.
-//     //fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>>;
-//     // returns the length of the tuple
-//     //fn len(self) -> isize;
-// }
-// // implementation for alt on a single element of a tuple (for this simple function, it is a bit of an overkill, but it makes sense for seq)
-// fn singleton_alt<'a, T, P>(to_parse: &'a str, pharser: P) -> ParseResult<'a, T>
-// where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> ParseResult<'a, T>,
-// {
-//     pharser(to_parse)
-// }
-// fn singelton_seq<'a, 'b, T, P>(to_parse: &'a str, pharser: P, mut accumulator: Vec<T>) -> ParseResult<'a, Vec<T>>
-// where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> ParseResult<'a, T>,
-// {
-//     let result : T;
-//     let to_parse_tail: &str;
-//     (result, to_parse_tail) = pharser(to_parse)?;
-//     accumulator.push(result);
-//     Ok((accumulator, to_parse_tail))
-// }
 
-// // implement the trait for singleton tuple of pharsers
-// impl<'a, T, P> Parsable<'a, T> for (P,)
-// where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> ParseResult<'a, T>,
-// {
-//     // base case
-//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T> {
-//         singleton_alt(to_parse, self.0) // call the function on the last tuple entry
-//     }
-//     // fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>> {
-//     //     // a little bit weird that this works, because the passed accumulator isn't necessary mutable? -> but it gets moved into here, so I guess I've got full control...
-//     //     singelton_seq(to_parse, self.0, accumulator)
-//     // }
-// }
-// // implement the trait for all other tuples
-// impl<'a, T, P, Rest> Parsable<'a, T> for (P, Rest)
-// where // P is a pharser (function that takes a reference to a string and outputs a pharser result)
-//     P: Fn(&'a str) -> ParseResult<'a, T>,
-//     Rest: Parsable<'a, T>,
-// {
-//     // recursive case
-//     fn alt(self, to_parse: &'a str) -> ParseResult<'a, T> {
-//         match singleton_alt(to_parse, self.0) { // apply first pharser
-//             ok @ Ok(_) => ok, // More elegant form of Ok(a) => Ok(a), because we don't repack a.
-//             Err(_) => self.1.alt(to_parse) // apply the next pharser
-//         }
-//     }
-//     // fn seq(self, to_parse: &'a str, accumulator: Vec<T>) -> ParseResult<'a, Vec<T>> {
-//     //     // let result : T;
-//     //     // let to_parse_tail: &str;
-//     //     // (result, to_parse_tail) = (self.0)(to_parse)?;
-//     //     // accumulator.push(result);
-//     //     let (accumulator, to_parse_tail) = singelton_seq(to_parse, self.0, accumulator)?;
-//     //     // also do the rest of the tuple
-//     //     Ok(self.1.seq(to_parse_tail, accumulator)?)
-//     // }
-// }
-// // implement as a function
-// fn alt<'a, T, Parsers>(to_parse: &'a str, parsers: Parsers) -> ParseResult<'a, T> 
-// where
-//     Parsers: Parsable<'a, T>,   
-// {
-//     parsers.alt(to_parse)
-// }
-// fn seq<'a, 'b, T, Parser>(to_parse: &'a str, parsers: Parser) -> ParseResult<'a, Vec<T>>
-// where
-//     Parser: Parsable<'a, 'b, T>
-// {
-//     let accumulator: Vec<T> = Vec::with_capacity(10);
-//     let (filled_accumulator, to_parse_tail)  = parsers.seq(to_parse, accumulator)?;
-//     Ok((filled_accumulator, to_parse_tail))
-//     //Err("not implemented yet")
-// }
-
-// another attempt at infinite tuple traits
-trait Countable {
-    fn my_count(&self) -> i32;
-}
-// base case
-// impl<P> Countable for (P,) {
-//     fn my_count(self) -> i32 {
-//         1
-//     }
-// }
-// // recursive case
-// impl<P, Rest> Countable for (P, Rest)
-// where Rest: Countable
-// {
-//     fn my_count(self) -> i32 {
-//         1 + (self.1).my_count()
-//     }
-// }
-// implement for list?
-// it works!!! -> But lists are homogenous, so this doesn't help at all.
-
-impl<P> Countable for [P]
-{
-    fn my_count(&self) -> i32 {
-        match self {
-            [_]  => 1,
-            _ => 1 + (self[1..]).my_count()
-        }
-        
-    }
-}
 
 /// returns the result of the first succeding pharser
 pub fn alt<'a, T>(to_parse: Parsable<'a>, pharsers: Vec<&dyn Fn(Parsable<'a>) -> ParseResult<'a, T>>) -> ParseResult<'a, T>
@@ -403,7 +355,7 @@ pub fn seq<'a, 'b, T>(to_parse: Parsable<'a>, pharsers: Vec<&dyn Fn(Parsable<'a>
     Ok((results, remaining))
 }
 /// removes whitespaces at the beginning of the input.
-/// whitespaces are determined by rusts is_whitespace method on characters.
+/// whitespaces are determined by rusts is_whitespace method on characters. That includes newlines.
 /// This pharser also succeeds if there is no space.
 /// returns the removed whitespaces.
 pub fn space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
@@ -412,6 +364,11 @@ pub fn space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
 /// sometimes there MUST be a space. This parser is a variant of the space parser, but it actually fails if there is no space.
 pub fn obligatory_space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
     some(to_parse, |input| item_satisfies(input, |x| x.is_whitespace()))
+}
+
+/// all types of whitespace except newline
+pub fn line_space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
+    many(to_parse, |input| item_satisfies(input, |x| x.is_whitespace() && x != (0xA as char)))
 }
 // now it starts to get language specific! //////////////////////////////////////////
 // The following pharsers care about space before and after them.
@@ -539,6 +496,14 @@ where P: Fn(Parsable<'a>) -> ParseResult<'a, T>, S: Fn(T) -> R
 {
     let (res, to_parse) = parser(to_parse)?;
     Ok((sucess_fn(res),
+    to_parse))
+}
+/// applies the parser and throws away the result to make it compatible with an .or_else chain.
+pub fn ignore_result<'a, P, T>(to_parse: Parsable<'a>, parser: P) -> ParseResult<'a, ()>
+where P: Fn(Parsable<'a>) -> ParseResult<'a, T>
+{
+    let (_res, to_parse) = parser(to_parse)?;
+    Ok(((),
     to_parse))
 }
 

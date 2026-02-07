@@ -10,11 +10,11 @@ use crate::term::Environment;
 
 fn main() {
     //let file_path = std::env::args().nth(1).expect("no path given");
-    let file_path = "testfile.tc";
-    println!("pattern: {:?}", file_path);
+    let file_path = "test_comments.tc";
+    println!("File path: {:?}", file_path);
     let contents = std::fs::read_to_string(file_path)
         .expect("Should have been able to read the file");
-    println!("{}", contents);
+    println!("File contents:\n---------------\n{}\n---------------", contents);
     let mut env_tracker = Environment::new();
 
     let to_parse = Parsable::with_string(&contents);
@@ -28,10 +28,10 @@ fn main() {
         ---------------------------------------
         ");
         for err in parse_errors {
-            println!("{:?}", err);
+            println!("{} at {}", err.msg, err.pos.to_text_pos(&contents))
         }
         println!("---------------------------------------")
     }
     env_tracker.evaluate_and_print_all_variables();
-    env_tracker.print_all_comment_locations();
+    env_tracker.print_all_comment_locations(&contents);
 }

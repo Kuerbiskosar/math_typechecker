@@ -1,6 +1,6 @@
 use crate::numbersystem::Number;
 use crate::term::{Environment, Operator, PTerm, Term, Text, TextType};
-use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, nat, obligatory_space, operator, optional, seq, some, space, sym, this_string, token, within};
+use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, ignore_result, nat, obligatory_space, line_space, operator, optional, seq, some, space, sym, this_string, token, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
 /// In this module, the language specific parsers are defined, to generate Terms etc.
 
@@ -21,8 +21,6 @@ fn separated_digits<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     let (_, to_parse) = many(to_parse,|x|alt(x, vec![&|x|char(x,' '), &|x|char(x,'\'')]))?;
     let (b, to_parse) = many(to_parse, separated_digits)?;
     Ok((format!("{}{}", a, b), to_parse))
-
-    // consider returning a i64
 }
 
 // this function is language specific, because it defines that a number can be written with a , or a . as a separator.
@@ -72,19 +70,28 @@ fn fin_rational<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)>
 /// This parses the part AFTER the number
 /// 
 /// `
-/// 123 e12 kg -> space and e12 get parsed (space is optional)
+/// 123 e12 kg -> e12 gets parsed. The optional space after the number gets handled by the number parser
 fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
-    let (_, to_parse) = space(to_parse)?; // can't fail
+    let shallow_parser = ShallowParser::new(&to_parse);
     let (_, to_parse) = match alt(to_parse, vec![&|x|char(x, 'e'), &|x|char(x, 'E')]) {
         Ok(res) => res,
-        Err((parsable, info)) => { // Note: some more convenient way to get the unexpected character would be nice
+        Err((to_parse, info)) => { // Note: some more convenient way to get the unexpected character would be nice
             // rebuild the parsable, to avoid cloning the whole information vectors.
-            let next_item = parsable.get_next_char();
+            let next_item = to_parse.get_next_char();
             let info = Info {msg: format!("expected either e or E, found {}", next_item), pos: info.pos};
-            return Err((parsable, info))
+            return Err((to_parse, info))
         }
     };
-    fin_rational(to_parse)
+    match fin_rational(to_parse) {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            // restore parsable to still contain e
+            let to_parse = to_parse.restore(shallow_parser);
+            let next_item = to_parse.get_next_char();
+            let info = Info {msg: format!("expected number after e notation. found {}", next_item), pos: info.pos};
+            return Err((to_parse, info))
+        },
+    }
 }
 
 /// parsers a number in the context of the language
@@ -107,7 +114,7 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
 
     // parsing of exponent notation
     // parse optional space before e notation
-    let (_, to_parse) = space(to_parse)?;
+    let (_, to_parse) = line_space(to_parse)?;
     // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
     let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
     let number_end_pos = to_parse.span.start;
@@ -151,24 +158,42 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
     // let res = alt(to_parse, vec![
     //     &|x|parse_assignment(x, env_tracker.clone())
     // ]);
-    let shallow_parser = ShallowParser::new(&to_parse);
     let res = parse_assignment(to_parse, env_tracker)
-        .or_else(|(x, _)|parse_comment(x, env_tracker));
+        .or_else(|(x, e1)|parse_comment(x, env_tracker)
+        .or_else(|(x, e2)|ignore_result(x, obligatory_space) // this makes sure that all trailing whitespaces are parsed
+        .or_else(
+            |(x, e3)| {
+                let info = Info { msg: format!("Unexpected pattern. Expected assignment, comment or trailing whitespace. \
+                                            The errors of these parsers are the following:\n \
+                                            assignment:\t{:?}\n \
+                                            comment:\t{:?}\n \
+                                            trailing whitespace:\t{:?}\n
+                                            ", e1, e2, e3),
+                                        pos: Span{start: x.span.start, end: x.span.start}
+                                      };
+                Err((x, info))
+                }
+            )));
 
     match res {
         Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
-        Err((mut to_parse, info)) => {
-            // todo: check if we reached the end of the file
-            if to_parse.span.start != to_parse.span.end{
-                
+        Err((to_parse, info)) => {
+            if to_parse.span.start != to_parse.span.end {
+                // TODO: get the most relevant parse error of the failed parsers
+                // add that error with add_error
+                // continue parsing on the next newline.
                 let start = to_parse.span.start;
-                let end = to_parse.span.end;
-                let info = Info { msg: format!("Parser terminated unexpectedly with the error: {info:?})"),
+                let (consumed, mut to_parse) = many(to_parse, |x|item_satisfies(x, |c| c != (0xA as char))).ok().unwrap();
+                let end = to_parse.span.start;
+                let info = Info { msg: format!("Due to unexpected pattern: Skipped parsing of '{}'. continuing parsing after next new line (if any)\n \
+                                                      More details: {:?}", consumed.trim_end(), info),
                         pos: Span{ start:start, end: end}
                     };
                 to_parse = to_parse.add_error(info);
+                parse_file(to_parse, env_tracker)
+            } else {
+                ((), to_parse)
             }
-            ((), to_parse.restore(shallow_parser))
         }
         //Err((to_parse, _)) => ((), to_parse.restore(shallow_parser)),
     }
@@ -184,25 +209,51 @@ fn parse_comment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environmen
 /// parse variable assignments like a = 1+1 or b = a
 /// Doesn't return content in the ParseResult but adds the assingment to the env_tracker argument
 pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
-    let var_start_pos = to_parse.span.start;
-    let (var, to_parse) = token(to_parse, sym)?;
-    let var_end_pos = to_parse.span.start;
-    let (_, to_parse) = token(to_parse, |x|char(x, '='))?;
-    let (expression, to_parse) = parse_expression(to_parse)?;
+    let shallow_parser = ShallowParser::new(&to_parse);
+    
+    let res: ParseResult<'a, ()> = 'inner: {
+        let var_start_pos = to_parse.span.start;
+        // This two liner simulates a question mark returning from this scope.
+        // For now i _think_ this is cleaner than using a match statement.
+        // Note: I can't use ? because to_parse needs to be reset before exiting the function.
+        // here the funky Err(x.err().unwrap()) has to be done, because the compiler doesn't know that result is an error,
+        // and would consider it the wrong type
+        // Maybe there could be a macro for this.
+        let var_result = token(to_parse, sym);
+        let Ok((var, to_parse)) = var_result else {break 'inner Err(var_result.err().unwrap())};
 
-    // at this point in the function we start modifying the env_tracker.
-    // we can't return an error after this point, because that would leave the env_tracker in a bad state.
-    let exists = env_tracker.insert_variable(var.clone(), expression);
-    let to_parse = match exists {
-        Some(overwritten) => to_parse.add_error(Info {
-            // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
-            msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten.content),
-            pos: Span{start: var_start_pos, end: var_end_pos},
-        }),
-        None => to_parse,
+        let var_end_pos = to_parse.span.start;
+        
+        let eq_result = token(to_parse, |x|char(x, '='));
+        let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
+
+        let expr_result = parse_expression(to_parse);
+        let Ok((expression, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
+
+        // at this point in the function we start modifying the env_tracker.
+        // we can't return an error after this point, because that would leave the env_tracker in a bad state.
+        let exists = env_tracker.insert_variable(var.clone(), expression);
+        let to_parse = match exists {
+            Some(overwritten) => to_parse.add_error(Info {
+                // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
+                msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten.content),
+                pos: Span{start: var_start_pos, end: var_end_pos},
+            }),
+            None => to_parse,
+        };
+        Ok(((), to_parse))
     };
-    Ok(((), to_parse))
+    
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
 }
+/// Note: this parser deletes spaces when it fails. TODO: fix.
+/// Questionmakrs should only be placed after unfailable parsers like space and many.
 fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let (_, to_parse) = space(to_parse)?;
     // TODO: put this into a function, because this code is used twice
@@ -213,6 +264,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
     // TODO: parse single operator function and stuff like sqrt_3(5)
     ])?;
+    return parse_expression_prime(to_parse, first);
 
     fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: PTerm) -> ParseResult<'a, PTerm> {
         let (_, to_parse) = space(to_parse)?;
@@ -276,8 +328,6 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
             },
         }
     }
-
-    parse_expression_prime(to_parse, first)
 }
 
 

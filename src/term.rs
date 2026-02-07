@@ -57,10 +57,10 @@ impl Environment {
             }
         }
     }
-    pub fn print_all_comment_locations(&self) {
+    pub fn print_all_comment_locations(&self, full: &str) {
         println!("--- comment locations ---");
         for comment in &self.texts {
-            println!("{:?}", comment)
+            println!("{:?} at {}", comment.text_type, comment.span.to_text_pos(full))
         }
         println!("------")
     }
