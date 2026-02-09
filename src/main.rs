@@ -10,7 +10,7 @@ use crate::term::Environment;
 
 fn main() {
     //let file_path = std::env::args().nth(1).expect("no path given");
-    let file_path = "test_comments.tc";
+    let file_path = "testfile.tc";
     println!("File path: {:?}", file_path);
     let contents = std::fs::read_to_string(file_path)
         .expect("Should have been able to read the file");
@@ -32,6 +32,8 @@ fn main() {
         }
         println!("---------------------------------------")
     }
+    env_tracker.evaluate_and_print_to_evaluate(&contents);
+    println!("----------------variables--------------");
     env_tracker.evaluate_and_print_all_variables();
-    env_tracker.print_all_comment_locations(&contents);
+    //env_tracker.print_all_comment_locations(&contents);
 }

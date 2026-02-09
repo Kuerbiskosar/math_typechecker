@@ -1,19 +1,31 @@
 -- I can finally annotate this document! yay!
+-- assignments:
 f = 1/(2/(3/4))
 --a = 5e10
 b = -6
 c = 1 + 2 + 3
 d = 1/2/3/4
 e = 1+2 * 3
-division = 5/0
-
-folgefehler = 7 + division
-b = 15
-r = 5
 
 multiline = 1 +
 5 + 7
-
+-- using variables
+r = 5
 circumference = 2*r*pi
 pi = 3.14
-test = circumference /10
+testing = circumference /10
+
+-- to evaluate
+1+2 = {}
+
+testing = {}
+--x = 21*2 = {}
+
+-- transformations (should eventually be typechecked)
+--a*a = a^2
+
+-- everything everywhere all at once
+--result = a*a = a^2 = {}
+
+-- conversion
+--a = b/c => c = b/a = {2}

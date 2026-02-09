@@ -134,12 +134,22 @@ pub struct Span {
     pub end: usize
 }
 impl Span {
+    // Returns a span with the given start and end
+    // start inclusive, end exclusive [start .. [end
+    // # usage on texts
+    // the first character is zero
+    // Example: span(2, 4) of "this text" represents "is"
+    pub fn new(start:usize, end:usize) -> Span {
+        Span { start, end }
+    }
     /// turns a span to human readable TextPos
     /// Whilst span is zero indexed and has the end exclusive, TextPos starts with one (first line, first character)
     /// and has the end character inclusive. This also means that if a span spans over zero characters,
     /// the end position is one smaller than the start position.
+    /// Note: This must be adjusted for multi file parsing. The spans will probably act as if the files are stitched together.
+    /// For this I will probably change the full argument from &str to vec[&str]
     pub fn to_text_pos(&self, full: &str) -> TextPos {
-        println!("{}, {}", self.start, self.end);
+        //println!("{}, {}", self.start, self.end);
         let mut char_array = full.chars();
         let mut line_number: usize = 1;
         let mut line_pos: usize = 1;
@@ -178,7 +188,7 @@ impl Span {
             }
         }
         let end_line = line_number;
-        let end_pos_in_line = line_pos-2;
+        let end_pos_in_line = line_pos-1;
         TextPos{ start_line, start_pos_in_line, end_line, end_pos_in_line }
     }
 }
@@ -454,16 +464,28 @@ pub fn operator<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     }
 }
 
-/// applies the given parser to some token surrounded by whitespace
+/// applies the given parser to some token optionally surrounded by whitespace
+/// It doesn't remove the space after the token, as that can be done by the next token parser.
 /// in other words in this string: "  abc   hello" it would check if "abc" gives a result from the parser.
-/// If that parser would suceed (as for example the alphabetic pharser would) it returns "hello" as the . 
-pub fn token<'a, P, T>(to_parse: Parsable<'a>, pharser: P) -> ParseResult<'a, String>
-where P: Fn(Parsable<'a>) -> ParseResult<'a, T>, T: ToString
+/// If that parser would suceed (as for example the alphabetic pharser would) it returns "   hello" as the parse result. 
+pub fn token<'a, P, T>(to_parse: Parsable<'a>, parser: P) -> ParseResult<'a, T>
+where P: Fn(Parsable<'a>) -> ParseResult<'a, T>
 {
-    let (_, to_parse) = space(to_parse)?; // space parser can't fail.
-    let (my_token, to_parse) = some(to_parse, pharser)?;
-    let (_, to_parse) = space(to_parse)?; // space parser can't fail
-    Ok((my_token, to_parse))
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        let (_, to_parse) = space(to_parse)?; // space parser can't fail.
+        let parse_result = parser(to_parse);
+        let Ok((my_token, to_parse)) = parse_result else {break 'inner Err(parse_result.err().unwrap())};
+        Ok((my_token, to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            let info = Info {msg: format!("parser inside token failed because: {}", info.msg), pos: info.pos};
+            return Err((to_parse,info))
+        },
+    }
 }
 
 /// takes a parser, whose sucess is optional.

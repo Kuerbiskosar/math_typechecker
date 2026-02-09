@@ -2,7 +2,7 @@ use crate::numbersystem::{Number, Unit};
 use crate::pharsers::{Info, Span};
 use std::{collections::HashMap, fmt::Display};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
     // list of infix operators with their precedence, for term parsing purposes
     infix_operators: String, // TODO: make datastructure for this
@@ -32,6 +32,8 @@ impl Environment {
             texts: Vec::new()
         }
     }
+    /// inserts the the given term inside the environment and links the given variable to it.
+    /// Returns a reference to the overwritten term, if the variable already existed.
     pub fn insert_variable(&mut self, var:String, expression: PTerm) -> Option<&PTerm>{
         self.terms.push(expression);
         let term_index = self.terms.len()-1;
@@ -42,8 +44,40 @@ impl Environment {
             None => None,
         }
     }
+    /// inserts the term into the environment and links it inside the "to_evaluate" vector.
+    pub fn insert_to_evaluate(&mut self, expression: PTerm) {
+        self.terms.push(expression);
+        let term_index = self.terms.len()-1;
+
+        self.to_evaluate.push(term_index);
+    }
+    /// combination of insert_variable and insert_to_evaluate
+    /// meant to store expressions like a = 5+5 = {}
+    pub fn insert_evaluated_variable(&mut self, var:String, expression: PTerm) -> Option<&PTerm>{
+        self.terms.push(expression);
+        let term_index = self.terms.len()-1;
+
+        self.to_evaluate.push(term_index);
+        let overwritten_term = self.variables.insert(var, term_index).clone();
+
+        match &overwritten_term {
+            Some(old_index) => Some(&self.terms[*old_index]),
+            None => None,
+        }
+    }
+
     pub fn insert_text(&mut self, text:Text) {
         self.texts.push(text);
+    }
+
+    pub fn evaluate_and_print_to_evaluate(&mut self, full: &str) {
+        for term_index in self.to_evaluate.clone() { // cloned to not run into borrow issues
+            let result = self.evaluate_term(term_index);
+            match result {
+                Ok(num) => println!("{} = {num}\tat {} ({:?})", self.terms[term_index].content, self.terms[term_index].span.to_text_pos(full), self.terms[term_index].span),
+                Err(msg) => println!("{} -> \tevaluation failed with error: {msg:?}", self.terms[term_index].content),
+            }
+        }    
     }
     pub fn evaluate_and_print_all_variables(& mut self) {
         // pretty print the environment
@@ -206,13 +240,13 @@ impl PTerm {
 
 /// Everything which can't be evaluated is text. This struct serves to hold the position of such text
 /// to render it in a different font than the equations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub text_type: TextType,
     pub span: Span,
 }
 // to choose how to render the text
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TextType {
     // Prosa text
     Normal,

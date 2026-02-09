@@ -2,7 +2,7 @@ use crate::numbersystem::Number;
 use crate::term::{Environment, Operator, PTerm, Term, Text, TextType};
 use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, ignore_result, nat, obligatory_space, line_space, operator, optional, seq, some, space, sym, this_string, token, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
-/// In this module, the language specific parsers are defined, to generate Terms etc.
+// In this module, the language specific parsers are defined, to generate Terms etc.
 
 /// returns a string of digits, ignoring separators
 /// 
@@ -16,11 +16,25 @@ use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
 /// according to [this](https://en.wikipedia.org/wiki/Decimal_separator) wikipedia entry (under Examples of use) the ' separator is only used in Switzerland, Liechtenstein and Italy
 /// but whatever.
 fn separated_digits<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
-    let (a, to_parse) = nat(to_parse)?;
-    // zero or less grouping symbols (valid grouping symbols are space and ')
-    let (_, to_parse) = many(to_parse,|x|alt(x, vec![&|x|char(x,' '), &|x|char(x,'\'')]))?;
-    let (b, to_parse) = many(to_parse, separated_digits)?;
-    Ok((format!("{}{}", a, b), to_parse))
+    // after nat suceeds, this parser will always suceed, because for example 1 counts as a separated digit.
+    // (separators are ignored, not required)
+    let (a, to_parse) = nat(to_parse)?; // ? ok because to_parse not yet modified
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        // zero or less grouping symbols (valid grouping symbols are space and '), ? ok because many can't fail
+        let (_, to_parse) = many(to_parse,|x|alt(x, vec![&|x|char(x,' '), &|x|char(x,'\'')]))?;
+        
+        let digits_res = separated_digits(to_parse);
+        let Ok((b, to_parse)) = digits_res else {break 'inner Err(digits_res.err().unwrap())};
+        Ok((format!("{}{}", a, b), to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, _)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Ok((format!("{a}"), to_parse))
+        },
+    }
 }
 
 // this function is language specific, because it defines that a number can be written with a , or a . as a separator.
@@ -73,13 +87,15 @@ fn fin_rational<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)>
 /// 123 e12 kg -> e12 gets parsed. The optional space after the number gets handled by the number parser
 fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
     let shallow_parser = ShallowParser::new(&to_parse);
+    // parse optional space before e notation
+    let (_, to_parse) = line_space(to_parse)?; // can't fail, ? ok.
     let (_, to_parse) = match alt(to_parse, vec![&|x|char(x, 'e'), &|x|char(x, 'E')]) {
         Ok(res) => res,
         Err((to_parse, info)) => { // Note: some more convenient way to get the unexpected character would be nice
             // rebuild the parsable, to avoid cloning the whole information vectors.
             let next_item = to_parse.get_next_char();
             let info = Info {msg: format!("expected either e or E, found {}", next_item), pos: info.pos};
-            return Err((to_parse, info))
+            return Err((to_parse.restore(shallow_parser), info))
         }
     };
     match fin_rational(to_parse) {
@@ -113,8 +129,6 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     let (base,  to_parse) = fin_rational(to_parse)?;
 
     // parsing of exponent notation
-    // parse optional space before e notation
-    let (_, to_parse) = line_space(to_parse)?;
     // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
     let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
     let number_end_pos = to_parse.span.start;
@@ -161,19 +175,21 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
     let res = parse_assignment(to_parse, env_tracker)
         .or_else(|(x, e1)|parse_comment(x, env_tracker)
         .or_else(|(x, e2)|ignore_result(x, obligatory_space) // this makes sure that all trailing whitespaces are parsed
+        .or_else(|(x, e3)|parse_to_evaluate(x, env_tracker) // this makes sure that all trailing whitespaces are parsed
         .or_else(
-            |(x, e3)| {
+            |(x, e4)| {
                 let info = Info { msg: format!("Unexpected pattern. Expected assignment, comment or trailing whitespace. \
                                             The errors of these parsers are the following:\n \
                                             assignment:\t{:?}\n \
                                             comment:\t{:?}\n \
                                             trailing whitespace:\t{:?}\n
-                                            ", e1, e2, e3),
+                                            evaluation:\t{:?}\n
+                                            ", e1, e2, e3, e4),
                                         pos: Span{start: x.span.start, end: x.span.start}
                                       };
                 Err((x, info))
                 }
-            )));
+            ))));
 
     match res {
         Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
@@ -252,79 +268,156 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Env
         },
     }
 }
+
+pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res: ParseResult<'a, ()> = 'inner: {
+        let expr_result = parse_expression(to_parse);
+        let Ok((term, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
+        
+        let pat_result = parse_evaluation_pattern(to_parse);
+        let Ok((_, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
+        
+        env_tracker.insert_to_evaluate(term);
+        Ok(((), to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse, info))
+        },
+    }
+}
+
+/// parses = {}
+/// it will eventually output some type telling how the result should be formattet.
+pub fn parse_evaluation_pattern<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, ()> {
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res: ParseResult<'a, ()> = 'inner: {
+        let eq_result = token(to_parse, |x|char(x, '='));
+        let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
+        let (_, to_parse) = space(to_parse)?; // ? ok because space is unfailable
+        // this will have to be broken up, to detect desired units and precision / e-notation etc
+        let pat_result = this_string(to_parse, "{}");
+        let Ok((_, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
+        Ok(((), to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
+}
+
 /// Note: this parser deletes spaces when it fails. TODO: fix.
 /// Questionmakrs should only be placed after unfailable parsers like space and many.
 fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
-    let (_, to_parse) = space(to_parse)?;
-    // TODO: put this into a function, because this code is used twice
-    let (first, to_parse) = alt(to_parse, vec![
-    &number,
-    &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
-    &parse_function, // when implemented, this (probably) has to happen before symbol parsing
-    &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
-    // TODO: parse single operator function and stuff like sqrt_3(5)
-    ])?;
-    return parse_expression_prime(to_parse, first);
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res: ParseResult<'a, PTerm> = 'inner: {
+        let (_, to_parse) = space(to_parse)?;
+        // TODO: put this into a function, because this code is used twice
+        let first_res = alt(to_parse, vec![
+        &number,
+        &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
+        &parse_function, // when implemented, this (probably) has to happen before symbol parsing
+        &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
+        // TODO: parse single operator function and stuff like sqrt_3(5)
+        ]);
+        let Ok((first, to_parse)) = first_res else {break 'inner Err(first_res.err().unwrap())};
+        break 'inner parse_expression_prime(to_parse, first);
+    };
+    let out = match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            Err((to_parse,info))
+        },
+    };
+    return out; // return needed, because the helper functions are defined after this.
 
     fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: PTerm) -> ParseResult<'a, PTerm> {
-        let (_, to_parse) = space(to_parse)?;
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
         // get the next operator, to be able to assemble right and left term
         let shallow_parser = ShallowParser::new(&to_parse);
-        let (op1, to_parse) = match parse_infix_op(to_parse){
+        let (op1, to_parse) = match token(to_parse, parse_infix_op){
             Ok(ok) => ok,
-            Err((to_parse, _)) => return Ok((first, to_parse)), // if there is no operator, we reached the end of the expression
+            Err((to_parse, _)) => break 'inner Ok((first, to_parse)), // if there is no operator, we reached the end of the expression
         };
-        let (second, to_parse) = parse_expression_rhs(to_parse.restore(shallow_parser))?;
+        let rhs_result = parse_expression_rhs(to_parse.restore(shallow_parser));
+        let Ok((second, to_parse)) = rhs_result else {break 'inner Err(rhs_result.err().unwrap())};
         
         let span_start = first.span.start;
         let span_end = second.span.end;
         let recursive_first = PTerm::new(Term::DuOp(Box::new(first), op1, Box::new(second)),
             Span{ start: span_start, end: span_end });
         parse_expression_prime(to_parse, recursive_first)
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
     }
+}
 
     /// gets the left hand side, given a string containing op1 num op2 num ...
     /// This could be num or num op2 num..., depending on the precedence and associativity of op1 and op2.
     fn parse_expression_rhs<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
-        // to parse contains _ op1 n2 op2 n3 ...
-        // note that this parser MUST suceed (for now), because it was already applied sucessfully with the same inputin parse_expression_prime
-        // we just apply it again, to get the first operator.
-        let (op1, to_parse) = parse_infix_op(to_parse)?;
-        let (_, to_parse) = space(to_parse)?;
-        // to parse contains _ _ n2 op2 n3 ...
-        let (second, to_parse) = alt(to_parse, vec![
-            &number,
-            &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
-            &parse_function,
-            &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
-            ])?; // if this parser fails, the expession ends with a operator which is invalid.
-        
-        let (_, to_parse) = space(to_parse)?;
-        // to parse contains _ _ _ op2 n3 ...
         let shallow_parser = ShallowParser::new(&to_parse);
-        match parse_infix_op(to_parse) {
-            Ok((op2, modified_to_parse)) => {
-                // check if op1 or op2 have higher precedence
-                // if they are equal, check their associativity
-                if check_left_associative(&op1, &op2) {
-                    Ok((second, modified_to_parse.restore(shallow_parser))) // return the right hand side belonging to op1. The rest of the equation gets handled by parse_expression_prime
-                } else {
-                    // the next operator might be of even higher precedence.
-                    // ex. 5+4*3^2
-                    // at this point, the expression is parsed to _ op1(+) second * 3^2
-                    // (notice how we don't update to_parse, when parsing op2)
-                    // here, parse expression should output 3^2, as that's the left hand side of op2.
-                    let (third, to_parse) = parse_expression_rhs(modified_to_parse.restore(shallow_parser))?;
-                    let span_start = second.span.start;
-                    let span_end = third.span.end;
-                    let term = Term::DuOp(Box::new(second), op2, Box::new(third));
-                    Ok((PTerm::new(term, Span{ start: span_start, end: span_end } ), to_parse))
-                }
-            },
-            Err((to_parse, _)) => {
-                // op2 doesn't exist -> end of equation
-                Ok((second, to_parse))
-                //Ok((Term::DuOp(Box::new(first), op1, Box::new(second)), to_parse))
+        let res = 'inner: {
+            // to parse contains _ op1 n2 op2 n3 ...
+            // note that this parser MUST suceed (for now), because it was already applied sucessfully with the same inputin parse_expression_prime
+            // we just apply it again, to get the first operator.
+            let (op1, to_parse) = token(to_parse, parse_infix_op)?;
+            let (_, to_parse) = space(to_parse)?;
+            // to parse contains _ _ n2 op2 n3 ...
+            let second_res = alt(to_parse, vec![
+                &number,
+                &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
+                &parse_function,
+                &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
+                ]); // if this parser fails, the expession ends with a operator which is invalid.
+            let Ok((second, to_parse)) = second_res else {break 'inner Err(second_res.err().unwrap())};
+
+            // to parse contains _ _ _ op2 n3 ...
+            let shallow_parser = ShallowParser::new(&to_parse);
+            match token(to_parse, parse_infix_op) {
+                Ok((op2, modified_to_parse)) => {
+                    // check if op1 or op2 have higher precedence
+                    // if they are equal, check their associativity
+                    if check_left_associative(&op1, &op2) {
+                        Ok((second, modified_to_parse.restore(shallow_parser))) // return the right hand side belonging to op1. The rest of the equation gets handled by parse_expression_prime
+                    } else {
+                        // the next operator might be of even higher precedence.
+                        // ex. 5+4*3^2
+                        // at this point, the expression is parsed to _ op1(+) second * 3^2
+                        // (notice how we don't update to_parse, when parsing op2)
+                        // here, parse expression should output 3^2, as that's the left hand side of op2.
+                        let third_res = parse_expression_rhs(modified_to_parse.restore(shallow_parser));
+                        let Ok((third, to_parse)) = third_res else {break 'inner Err(third_res.err().unwrap())};
+                        let span_start = second.span.start;
+                        let span_end = third.span.end;
+                        let term = Term::DuOp(Box::new(second), op2, Box::new(third));
+                        Ok((PTerm::new(term, Span{ start: span_start, end: span_end } ), to_parse))
+                    }
+                },
+                Err((to_parse, _)) => {
+                    // op2 doesn't exist -> end of equation
+                    Ok((second, to_parse))
+                    //Ok((Term::DuOp(Box::new(first), op1, Box::new(second)), to_parse))
+                },
+            }
+        };
+        match res {
+            ok @ Ok(_) => ok,
+            Err((to_parse, info)) => {
+                let to_parse = to_parse.restore(shallow_parser);
+                return Err((to_parse,info))
             },
         }
     }
@@ -375,18 +468,44 @@ mod tests {
 
     #[test]
     fn test_separated_digits() {
-        let to_parse = Parsable::with_string("5e10");
+        let to_parse = Parsable::with_string("5 e10");
         let left = separated_digits(to_parse);
-        assert_eq!(left, Ok(("5".to_string(), Parsable::with_str_offset("e10", 1))));
+        assert_eq!(left, Ok(("5".to_string(), Parsable::with_str_offset(" e10", 1))));
     }
     #[test]
     fn test_fin_rational() {
         let to_parse = Parsable::with_string("-123'456.5 e-3");
         let left = fin_rational(to_parse);
-        assert_eq!(left, Ok(((true, 123456, 5), Parsable::with_str_offset("e-3",11))));
+        assert_eq!(left, Ok(((true, 123456, 5), Parsable::with_str_offset(" e-3",10))));
     }
     #[test]
     fn test_number() {
+        let to_parse = Parsable::with_string("-123'456.5 something");
+        let left = number(to_parse);
+
+        let term = Term::Num(Number {
+            value: -123456.5,
+            unit: Unit::unitless(), // TODO: parse unit
+        });
+        let expected_result = Ok((PTerm::new(term, Span { start: 0, end: 10 } ),
+            Parsable::with_str_offset(" something", 10)));
+        assert_eq!(left, expected_result);
+    }
+    #[test]
+    fn test_number_eq() {
+        let to_parse = Parsable::with_string("7.3 = {}");
+        let left = number(to_parse);
+
+        let term = Term::Num(Number {
+            value: 7.3,
+            unit: Unit::unitless(), // TODO: parse unit
+        });
+        let expected_result = Ok((PTerm::new(term, Span { start: 0, end: 3 } ),
+            Parsable::with_str_offset(" = {}", 3)));
+        assert_eq!(left, expected_result);
+    }
+    #[test]
+    fn test_number_e() {
         let to_parse = Parsable::with_string("-123'456.5 e-3");
         let left = number(to_parse);
 
@@ -411,5 +530,68 @@ mod tests {
             }
             print!("<{}>", char.escape_unicode());
         }
+    }
+    #[test]
+    fn test_parse_expression_number () {
+        let to_parse = Parsable::with_string("7.3 = {}");
+        let result = parse_expression(to_parse);
+
+        let after_parse = Parsable::with_str_offset(" = {}", 3);
+        
+        let seven = Number { value: 7.3, unit: Unit::unitless() };
+        let expected_term = PTerm::new(Term::Num(seven.clone()), Span::new(0,3));
+
+        let right = Ok((expected_term, after_parse));
+        assert_eq!(result, right);
+    }
+    #[test]
+    fn test_parse_expression_no_space () {
+        let to_parse = Parsable::with_string("7+7 = {}");
+        let result = parse_expression(to_parse);
+
+        let after_parse = Parsable::with_str_offset(" = {}", 3);
+        
+        let seven = Number { value: 7.0, unit: Unit::unitless() };
+        let expected_term = PTerm::new(Term::DuOp(Box::new(PTerm::new(Term::Num(seven.clone()), Span::new(0,1))),
+                                             Operator::Infix("+".to_string()),
+                                             Box::new(PTerm::new(Term::Num(seven), Span::new(2,3)))),
+                                             Span::new(0, 3));
+
+        let right = Ok((expected_term, after_parse));
+        assert_eq!(result, right);
+    }
+    #[test]
+    fn test_parse_expression_space () {
+        let to_parse = Parsable::with_string("7 + 7 = {}");
+        let result = parse_expression(to_parse);
+
+        let after_parse = Parsable::with_str_offset(" = {}", 5);
+        
+        let seven = Number { value: 7.0, unit: Unit::unitless() };
+        let expected_term = PTerm::new(Term::DuOp(Box::new(PTerm::new(Term::Num(seven.clone()), Span::new(0,1))),
+                                             Operator::Infix("+".to_string()),
+                                             Box::new(PTerm::new(Term::Num(seven), Span::new(4,5)))),
+                                             Span::new(0, 5));
+
+        let right = Ok((expected_term, after_parse));
+        assert_eq!(result, right);
+    }
+    #[test]
+    fn test_parse_to_evaluate_expression () {
+        let to_parse = Parsable::with_string("7*7 = {}");
+        let mut env_tracker = Environment::new();
+        let result = parse_to_evaluate(to_parse, &mut env_tracker);
+
+        let after_parse = Parsable::with_str_offset("", 8);
+        let right = Ok(((), after_parse));
+        assert_eq!(result, right);
+        let mut expected_environment = Environment::new();
+        let seven = Number { value: 7.0, unit: Unit::unitless() };
+        let expected_term = PTerm::new(Term::DuOp(Box::new(PTerm::new(Term::Num(seven.clone()), Span::new(0,1))),
+                                             Operator::Infix("*".to_string()),
+                                             Box::new(PTerm::new(Term::Num(seven), Span::new(2,3)))),
+                                             Span::new(0, 3));
+        expected_environment.insert_to_evaluate(expected_term);
+        assert_eq!(env_tracker, expected_environment);
     }
 }
