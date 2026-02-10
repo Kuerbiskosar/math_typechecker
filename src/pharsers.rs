@@ -1,5 +1,5 @@
 use std::fmt::Display;
-
+use crate::syntax_constants::{LINE_COMMENT, ASSIGNMENT, EVALUATE};
 /*
     a pharser of things
   is a function from strings
@@ -353,16 +353,28 @@ pub fn alt<'a, T>(to_parse: Parsable<'a>, pharsers: Vec<&dyn Fn(Parsable<'a>) ->
 // maybe it is possible to implement this with a macro?
 /// takes the output of the first pharser as input for the next
 // actually it might be a good thing to not let the compiler generate a new seq function for each pharser that the program passes into it
-pub fn seq<'a, 'b, T>(to_parse: Parsable<'a>, pharsers: Vec<&dyn Fn(Parsable<'a>) -> ParseResult<'a, T>>) -> ParseResult<'a, Vec<T>>
+fn seq<'a, 'b, T>(to_parse: Parsable<'a>, parsers: Vec<&dyn Fn(Parsable<'a>) -> ParseResult<'a, T>>) -> ParseResult<'a, Vec<T>>
 {
-    let mut results: Vec<T> = Vec::with_capacity(pharsers.len());
-    let mut remaining= to_parse;
-    for pharser in pharsers {
-        let result : T;
-        (result, remaining) = pharser(remaining)?;
-        results.push(result);
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: { 
+        let mut results: Vec<T> = Vec::with_capacity(parsers.len());
+        let mut remaining= to_parse;
+        for parser in parsers {
+            let parser_result = parser(remaining);
+            let Ok((result, remaining_2)) = parser_result else {break 'inner Err(parser_result.err().unwrap())};
+            remaining = remaining_2; // can't mutate variable in let else statement, because the let is required.
+            results.push(result);
+        }
+        Ok((results, remaining))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            let info = Info {msg: format!("sequence parser failed because: {}", info.msg), pos: info.pos};
+            return Err((to_parse,info))
+        },
     }
-    Ok((results, remaining))
 }
 /// removes whitespaces at the beginning of the input.
 /// whitespaces are determined by rusts is_whitespace method on characters. That includes newlines.
@@ -399,8 +411,11 @@ pub fn nat<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
 /// Pharses identifiers: string of characters, terminatet by any non alphanumeric
 /// Must start with an alphabetic and can contain numbers
 pub fn sym<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
-    let pharser_result = {
-        let (a, to_parse) = some(to_parse, alphabetic)?;
+    let pharser_result = 'inner: {
+        let some_res = some(to_parse, alphabetic);
+        let Ok((a, to_parse)) = some_res else {break 'inner Err(some_res.err().unwrap())};
+
+        // many can't fail, ? ok.
         let (b, to_parse) = many(to_parse, alphanumeric)?;
         Ok((format!("{a}{b}"), to_parse))
     };
@@ -408,7 +423,7 @@ pub fn sym<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
         ok @ Ok(_) => ok,
         
         Err((parsable, info)) => {
-            let info = Info {msg: "expected a identifier (something which starts with a alphabetic character)".to_string(), pos: info.pos};
+            let info = Info {msg: "expected a identifier (something which starts with a alphabetic character, optionally followed by alphanumerics)".to_string(), pos: info.pos};
             Err((parsable, info))
         },
     }
@@ -437,18 +452,22 @@ pub fn this_string<'a>(to_parse: Parsable<'a>, string: &str) -> ParseResult<'a, 
         },
     }
 }
-
+/// Parses operators, which must be non-alphanumeric characters.
+/// Not allowed inside an operator are '(' and ')'. Further the Operator can't be
+/// exactly '=' or '--' (assignment/equal and comment operator at the time of writing this). But '==' is allowed.
+/// Note: right now this doesn't allow any opening or closing brackets.
+/// I could change this to accept opening and closing brackets within an operator, but that introduces
+/// some edge cases like ""-(15)" accepting the opening bracket as an operator, which I don't want.
 pub fn operator<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
-    let pharser_result = {
+    let pharser_result = 'inner: {
         let operator_start_pos = to_parse.span.start;
         let shallow_parser = ShallowParser::new(&to_parse);
-        // Note: right now this doesn't allow any opening or closing brackets.
-        // I could change this to accept opening and closing brackets within an operator, but that introduces
-        // some edge cases like ""-(15)" accepting the opening bracket as an operator, which I don't want. 
-        let (a, to_parse) = some(to_parse, valid_operator)?;
+        // Note: here try operator (?) would be fine, but this gives a more specific error message.
+        let op_res = some(to_parse, valid_operator);
+        let Ok((a, to_parse)) = op_res else {break 'inner Err(op_res.err().unwrap())};
         // check that the final parsed operator is valid
         // todo: somehow have the comment symbol looked up, to change it at one place.
-        if a == "(" || a == ")" || a == "=" || a == "--" {
+        if a == "(" || a == ")" || a == ASSIGNMENT || a == EVALUATE || a == LINE_COMMENT {
             let operator_end_pos = to_parse.span.start;
             return Err((to_parse.restore(shallow_parser), Info{ msg: format!("Expected an operator but got {} instead, which is a reserved symbol", a),
                         pos: Span{ start: operator_start_pos, end: operator_end_pos } }))
@@ -458,7 +477,7 @@ pub fn operator<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     match pharser_result {
         ok @ Ok(_) => ok,
         Err((parsable, info)) => {
-            let info = Info { msg: "expected non alphanumeric.".to_string(), pos: info.pos };
+            let info = Info { msg: "expected an operator.".to_string(), pos: info.pos };
             Err((parsable, info))
         },
     }
@@ -498,7 +517,7 @@ where P: Fn(Parsable<'a>) -> ParseResult<'a, T>
 /// The following value (which is parsed later) is negative.
 /// ```
 /// let to_parse = Parsable::with_string("-25");
-/// let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false)?;
+/// let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false).unwrap();
 /// assert_eq!(is_negative, true);
 /// ````
 pub fn optional<'a, P, S, T, R>(to_parse: Parsable<'a>, parser: P, sucess_fn: S, default: R) -> ParseResult<'a, R> 
@@ -537,10 +556,27 @@ Po: Fn(Parsable<'a>) -> ParseResult<'a, O>,
 P: Fn(Parsable<'a>) -> ParseResult<'a, T>,
 Pc: Fn(Parsable<'a>) -> ParseResult<'a, C>,
 {
-    let (_, to_parse) = opening_parser(to_parse)?; // when this fails, the whole parser fails
-    let (content, to_parse) = content_parser(to_parse)?;
-    let (_, to_parse) = closing_parser(to_parse)?;
-    Ok((content, to_parse))
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        let open_res = opening_parser(to_parse);
+        let Ok((_, to_parse)) = open_res else {break 'inner Err(open_res.err().unwrap())}; // when this fails, the whole parser fails
+        
+        let content_res = content_parser(to_parse);
+        let Ok((content, to_parse)) = content_res else {break 'inner Err(content_res.err().unwrap())};
+        
+        let closing_res = closing_parser(to_parse);
+        let Ok((_, to_parse)) = closing_res else {break 'inner Err(closing_res.err().unwrap())};
+        
+        Ok((content, to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            let info = Info {msg: format!("parser within failed because: {}", info.msg), pos: info.pos};
+            return Err((to_parse,info))
+        },
+    }
 }
 
 fn internal_testing() {

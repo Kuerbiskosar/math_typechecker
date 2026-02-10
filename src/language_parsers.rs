@@ -1,7 +1,8 @@
 use crate::numbersystem::Number;
 use crate::term::{Environment, Operator, PTerm, Term, Text, TextType};
-use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, ignore_result, nat, obligatory_space, line_space, operator, optional, seq, some, space, sym, this_string, token, within};
+use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, ignore_result, nat, obligatory_space, line_space, operator, optional, some, space, sym, this_string, token, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
+use crate::syntax_constants::{LINE_COMMENT, EVALUATE, ASSIGNMENT};
 // In this module, the language specific parsers are defined, to generate Terms etc.
 
 /// returns a string of digits, ignoring separators
@@ -52,32 +53,44 @@ fn separated_digits<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
 /// -3.1 -> (true, 3, 1)
 /// Note: i considered having the first number be negative, if the sign is negative, but that won't work for -0.5 (for zero)
 fn fin_rational<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
-    let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false)?;
-    // parse digits, which may be separated by a space or a apostrophe (')
-    let original_parsable = ShallowParser::new(&to_parse);
-    let (number_string, to_parse) = separated_digits(to_parse)?;
-    // convert a numberstring into an actual number
-    let left = match number_string.parse::<i64>() {
-        Ok(number) => number,
-        Err(convert_msg) => {
-            let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
-            \n The error when converting to a number was: {}", convert_msg.to_string()),
-            pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
-            return Err((to_parse.restore(original_parsable), info))
-        }
-    };
+    fn fin_rational_inner<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
+        let (is_negative, to_parse) = optional(to_parse, |x|char(x, '-'), |x, _|Ok((true, x)), false)?;
+        // parse digits, which may be separated by a space or a apostrophe (')
+        let original_parsable = ShallowParser::new(&to_parse);
+        let (number_string, to_parse) = separated_digits(to_parse)?;
+        // convert a numberstring into an actual number
+        let left = match number_string.parse::<i64>() {
+            Ok(number) => number,
+            Err(convert_msg) => {
+                let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
+                \n The error when converting to a number was: {}", convert_msg.to_string()),
+                pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
+                return Err((to_parse.restore(original_parsable), info))
+            }
+        };
 
-    let (number_string, to_parse) = optional(to_parse, |x|alt(x, vec![&|x|char(x,'.'), &|x|char(x,',')]), |x,_|separated_digits(x), "0".to_string())?;
-    let right = match number_string.parse::<i64>() {
-        Ok(number) => number,
-        Err(convert_msg) => {
-            let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
-            \n The error when converting to a number was: {}", convert_msg.to_string()),
-            pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
-            return Err((to_parse.restore(original_parsable), info))
-        }
-    };
-    Ok(((is_negative, left, right), to_parse))
+        let (number_string, to_parse) = optional(to_parse, |x|alt(x, vec![&|x|char(x,'.'), &|x|char(x,',')]), |x,_|separated_digits(x), "0".to_string())?;
+        let right = match number_string.parse::<i64>() {
+            Ok(number) => number,
+            Err(convert_msg) => {
+                let info = Info {msg: format!("Failed to pharse number made of numbers (probably too big). 
+                \n The error when converting to a number was: {}", convert_msg.to_string()),
+                pos: Span{ start: original_parsable.span.start, end: to_parse.span.end }};
+                return Err((to_parse.restore(original_parsable), info))
+            }
+        };
+        Ok(((is_negative, left, right), to_parse))
+    }
+
+    let shallow_parser = ShallowParser::new(&to_parse); 
+    let res = fin_rational_inner(to_parse);
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
 }
 /// parse exponential notation, as used often in calculators
 /// 
@@ -124,43 +137,57 @@ fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, i64, i64)> {
 /// TODO: Complex numbers should be parsed by this too.
 /// TODO: binary and hex representation would be cool.
 fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
-    let (_, to_parse) = space(to_parse)?;
-    let number_star_pos = to_parse.span.start;
-    let (base,  to_parse) = fin_rational(to_parse)?;
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        let (_, to_parse) = space(to_parse)?; // space can't fail
+        let number_star_pos = to_parse.span.start;
+        let num_res = fin_rational(to_parse);
+        let Ok((base,  to_parse)) = num_res else {break 'inner Err(num_res.err().unwrap())};
 
-    // parsing of exponent notation
-    // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
-    let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
-    let number_end_pos = to_parse.span.start;
-    //println!("base: {:?}, exponent: {:?}", base, exponent);
-    // this is temporary, until I rework how values are stored (don't really fancy using floats)
-    let value = {
-        let comma_digits:u32 = (base.2).to_string().len() as u32;
-        let divisor = (i32::pow(10, comma_digits)) as f64;
-        //println!("base.1 as f: {}, base.2 as f: {}, divisor: {}", base.1 as f64, base.2 as f64, divisor);
-        let base_value = (base.1 as f64 + (base.2 as f64)/divisor) * if base.0 {-1.0} else {1.0};
-        
-        let exp_comma_digits:u32 = (exponent.2).to_string().len() as u32;
-        let exp_divisor = (i32::pow(10, exp_comma_digits)) as f64;
-        let exponent_value = (exponent.1 as f64 + (exponent.2 as f64)/exp_divisor) * if exponent.0 {-1.0} else {1.0};
-        //println!("base_value: {}, exponent_value: {}", base_value, exponent_value);
-        base_value * f64::powf(10.0, exponent_value)
+        // parsing of exponent notation
+        // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
+        // optional parser can't fail
+        let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0))?;
+        let number_end_pos = to_parse.span.start;
+        //println!("base: {:?}, exponent: {:?}", base, exponent);
+        // this is temporary, until I rework how values are stored (don't really fancy using floats)
+        let value = {
+            let comma_digits:u32 = (base.2).to_string().len() as u32;
+            let divisor = (i32::pow(10, comma_digits)) as f64;
+            //println!("base.1 as f: {}, base.2 as f: {}, divisor: {}", base.1 as f64, base.2 as f64, divisor);
+            let base_value = (base.1 as f64 + (base.2 as f64)/divisor) * if base.0 {-1.0} else {1.0};
+            
+            let exp_comma_digits:u32 = (exponent.2).to_string().len() as u32;
+            let exp_divisor = (i32::pow(10, exp_comma_digits)) as f64;
+            let exponent_value = (exponent.1 as f64 + (exponent.2 as f64)/exp_divisor) * if exponent.0 {-1.0} else {1.0};
+            //println!("base_value: {}, exponent_value: {}", base_value, exponent_value);
+            base_value * f64::powf(10.0, exponent_value)
+        };
+        // convert the collected information into the numbersystem::Number type.
+        let term = Term::Num(Number {
+            value: value,
+            unit: Unit::unitless(), // TODO: parse unit
+        });
+        let p_term = PTerm::new(term, Span{ start: number_star_pos, end: number_end_pos });
+        Ok((p_term, to_parse))
     };
-    // convert the collected information into the numbersystem::Number type.
-    let term = Term::Num(Number {
-        value: value,
-        unit: Unit::unitless(), // TODO: parse unit
-    });
-    let p_term = PTerm::new(term, Span{ start: number_star_pos, end: number_end_pos });
-    Ok((p_term, to_parse))
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
 }
 
 /// Comment from the beginning of the comment symbol to the end of the line
 fn line_comment<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Text> {
-    let start_pos = to_parse.span.start;
-    let (_, to_parse) = space(to_parse)?;
-    let (_, to_parse) = this_string(to_parse, "--")?;
-    let (text_type, to_parse) = optional(to_parse, obligatory_space, |x,_|Ok((TextType::Normal, x)), TextType::StrikeThrough)?;
+    let (_, to_parse) = token(to_parse, |x|this_string(x, LINE_COMMENT))?;
+    let start_pos = to_parse.span.start - LINE_COMMENT.len();
+
+    let (text_type, to_parse) = optional(to_parse, 
+        obligatory_space, 
+        |x,_|Ok((TextType::Normal, x)), TextType::StrikeThrough).expect("many parser should never be able to fail");
     let (_content, to_parse) = (many(to_parse, |x|item_satisfies(x, |c|c!= (0xA as char) ))).expect("many parser should never be able to fail");
     let output = Text { text_type: text_type, span: Span { start: start_pos, end: to_parse.span.start } };
     Ok((output, to_parse))
@@ -240,7 +267,7 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Env
 
         let var_end_pos = to_parse.span.start;
         
-        let eq_result = token(to_parse, |x|char(x, '='));
+        let eq_result = token(to_parse, |x|this_string(x, ASSIGNMENT));
         let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
 
         let expr_result = parse_expression(to_parse);
@@ -295,7 +322,7 @@ pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
 pub fn parse_evaluation_pattern<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, ()> {
     let shallow_parser = ShallowParser::new(&to_parse);
     let res: ParseResult<'a, ()> = 'inner: {
-        let eq_result = token(to_parse, |x|char(x, '='));
+        let eq_result = token(to_parse, |x|this_string(x, EVALUATE));
         let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
         let (_, to_parse) = space(to_parse)?; // ? ok because space is unfailable
         // this will have to be broken up, to detect desired units and precision / e-notation etc

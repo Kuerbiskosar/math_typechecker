@@ -2,6 +2,7 @@ mod numbersystem;
 mod term;
 mod pharsers;
 mod language_parsers;
+mod syntax_constants;
 
 use pharsers::Parsable;
 use language_parsers::parse_file;
