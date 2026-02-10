@@ -303,9 +303,9 @@ pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
         let Ok((term, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
         
         let pat_result = parse_evaluation_pattern(to_parse);
-        let Ok((_, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
+        let Ok((evaluated_position, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
         
-        env_tracker.insert_to_evaluate(term);
+        env_tracker.insert_to_evaluate(term, evaluated_position);
         Ok(((), to_parse))
     };
     match res {
@@ -319,16 +319,18 @@ pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
 
 /// parses = {}
 /// it will eventually output some type telling how the result should be formattet.
-pub fn parse_evaluation_pattern<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, ()> {
+/// For now it just outputs the position of where the result should be placed.
+pub fn parse_evaluation_pattern<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, Span> {
     let shallow_parser = ShallowParser::new(&to_parse);
-    let res: ParseResult<'a, ()> = 'inner: {
+    let res: ParseResult<'a, Span> = 'inner: {
         let eq_result = token(to_parse, |x|this_string(x, EVALUATE));
         let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
         let (_, to_parse) = space(to_parse)?; // ? ok because space is unfailable
-        // this will have to be broken up, to detect desired units and precision / e-notation etc
+        // TODO: this will have to be broken up, to detect desired units and precision / e-notation etc
+        let result_position = Span::new(to_parse.span.start + 1, to_parse.span.start + 1);
         let pat_result = this_string(to_parse, "{}");
         let Ok((_, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
-        Ok(((), to_parse))
+        Ok((result_position, to_parse))
     };
     match res {
         ok @ Ok(_) => ok,
@@ -618,7 +620,7 @@ mod tests {
                                              Operator::Infix("*".to_string()),
                                              Box::new(PTerm::new(Term::Num(seven), Span::new(2,3)))),
                                              Span::new(0, 3));
-        expected_environment.insert_to_evaluate(expected_term);
+        expected_environment.insert_to_evaluate(expected_term, Span::new(7, 7));
         assert_eq!(env_tracker, expected_environment);
     }
 }

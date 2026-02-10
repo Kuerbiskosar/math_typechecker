@@ -15,7 +15,7 @@ pub struct Environment {
     // Holding pairs of terms which should be equal to each other.
     equations: Vec<(usize, usize)>,
     // Terms whose results should be displayed
-    to_evaluate: Vec<usize>,
+    to_evaluate: Vec<(usize, Span)>,
 
     // everything which doesn't have to do with terms
     texts: Vec<Text>,
@@ -45,19 +45,20 @@ impl Environment {
         }
     }
     /// inserts the term into the environment and links it inside the "to_evaluate" vector.
-    pub fn insert_to_evaluate(&mut self, expression: PTerm) {
+    /// Also takes the position, where the result should be placed in the parsed file.
+    pub fn insert_to_evaluate(&mut self, expression: PTerm, position: Span) {
         self.terms.push(expression);
         let term_index = self.terms.len()-1;
 
-        self.to_evaluate.push(term_index);
+        self.to_evaluate.push((term_index, position));
     }
     /// combination of insert_variable and insert_to_evaluate
     /// meant to store expressions like a = 5+5 = {}
-    pub fn insert_evaluated_variable(&mut self, var:String, expression: PTerm) -> Option<&PTerm>{
+    pub fn insert_evaluated_variable(&mut self, var:String, expression: PTerm, result_position: Span) -> Option<&PTerm>{
         self.terms.push(expression);
         let term_index = self.terms.len()-1;
 
-        self.to_evaluate.push(term_index);
+        self.to_evaluate.push((term_index, result_position));
         let overwritten_term = self.variables.insert(var, term_index).clone();
 
         match &overwritten_term {
@@ -71,10 +72,10 @@ impl Environment {
     }
 
     pub fn evaluate_and_print_to_evaluate(&mut self, full: &str) {
-        for term_index in self.to_evaluate.clone() { // cloned to not run into borrow issues
+        for (term_index, res_position) in self.to_evaluate.clone() { // cloned to not run into borrow issues
             let result = self.evaluate_term(term_index);
             match result {
-                Ok(num) => println!("{} = {num}\tat {} ({:?})", self.terms[term_index].content, self.terms[term_index].span.to_text_pos(full), self.terms[term_index].span),
+                Ok(num) => println!("{} = {num}\tat {} (Term at {})", self.terms[term_index].content, res_position.to_text_pos(full), self.terms[term_index].span.to_text_pos(full)),
                 Err(msg) => println!("{} -> \tevaluation failed with error: {msg:?}", self.terms[term_index].content),
             }
         }    

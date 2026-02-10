@@ -201,10 +201,12 @@ pub struct TextPos {
 }
 impl Display for TextPos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.start_line == self.end_line {
-            write!(f, "line: {}, from {} to {}", self.start_line, self.start_pos_in_line, self.end_pos_in_line)
+        if self.start_line != self.end_line {
+            write!(f, "line: {}, from character {} to line {} until character {}", self.start_line, self.start_pos_in_line, self.end_line, self.end_pos_in_line)
+        } else if  self.start_pos_in_line == self.end_pos_in_line + 1 {
+            write!(f, "line: {}, at character {}", self.start_line, self.start_pos_in_line)
         } else {
-            write!(f, "line: {}, from {} to line {} until {}", self.start_line, self.start_pos_in_line, self.end_line, self.end_pos_in_line)
+            write!(f, "line: {}, from character {} to {}", self.start_line, self.start_pos_in_line, self.end_pos_in_line)
         }
     }
 }
