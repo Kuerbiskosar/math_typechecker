@@ -192,6 +192,23 @@ impl Span {
         TextPos{ start_line, start_pos_in_line, end_line, end_pos_in_line }
     }
 }
+/// A wrapper to add a position from the parse document to any type
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spanned<T> {
+    content: T,
+    span: Span
+}
+impl<T> Spanned<T> {
+    pub fn new(content: T, start: usize, end: usize) -> Spanned<T> {
+        Spanned { content, span: Span::new(start, end) }
+    }
+    pub fn get_content(&self) -> &T {
+        &self.content
+    }
+    pub fn get_span(&self) -> &Span {
+        &self.span
+    }
+}
 // struct to represent span in a human readable format
 pub struct TextPos {
     pub start_line: usize,
@@ -577,6 +594,37 @@ Pc: Fn(Parsable<'a>) -> ParseResult<'a, C>,
             let to_parse = to_parse.restore(shallow_parser);
             let info = Info {msg: format!("parser within failed because: {}", info.msg), pos: info.pos};
             return Err((to_parse,info))
+        },
+    }
+}
+/// consumes and returns until the given parser suceeds. Returns a tuple with the consumed string and the output of the parser.
+/// Fails if the parser never suceeds.
+/// This is intended to parse until some symbol, but the sky is the limit.
+pub fn until<'a, P, T>(to_parse: Parsable<'a>, parser: P) -> ParseResult<'a, (String, T)>
+where P: Fn(Parsable<'a>) -> ParseResult<'a, T>,
+{
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        let res = parser(to_parse);
+        match res {
+            Ok((parser_result, to_parse)) => break 'inner Ok((("".to_owned(), parser_result), to_parse)),
+            Err((to_parse, _)) => {
+                // fails if we reached the end of the input
+                let item_result= item(to_parse);
+                let Ok((next_char, to_parse)) = item_result else {break 'inner Err(item_result.err().unwrap())};
+
+                let until_result = until(to_parse, parser);
+                let Ok(((following_string, parser_result), to_parse)) = until_result else {break 'inner Err(until_result.err().unwrap())};
+                break 'inner Ok(((format!("{}{}", next_char, following_string), parser_result), to_parse))
+            },
+        };
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            let info = Info {msg: format!("parser until failed because: {}", info.msg), pos: info.pos};
+            return Err((to_parse, info))
         },
     }
 }

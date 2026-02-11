@@ -1,11 +1,18 @@
-use crate::numbersystem::{Number, Unit};
-use crate::pharsers::{Info, Span};
+use crate::numbersystem::{Number, Quantity, Unit};
+use crate::pharsers::{Info, Span, Spanned};
 use std::{collections::HashMap, fmt::Display};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
     // list of infix operators with their precedence, for term parsing purposes
     infix_operators: String, // TODO: make datastructure for this
+    // holds all the quanititys explicitly defined. This is used to assign the quantitys to new base units.
+    // The key is the quantity symbol (which is used in the program like Unit: Metre (l) <- l is the length symbol).
+    // The given position is where the Quantity is defined
+    quantitys: HashMap<String, Spanned<Quantity>>,
+    // holds all the unitss explicitly defined. This will be used to convert Numbers to different units.
+    // The key is the unit symbol. (which is used in the program like: 5 kg = {[g]} <- g is the unit symbol.)
+    units: HashMap<String, Spanned<Unit>>,
     // holds all the terms defined in the program. They all get typechecked.
     // todo make datastructure to hold evaluated value and type
     // The following types hold the index of the term within this vector.
@@ -25,12 +32,17 @@ impl Environment {
     pub fn new() -> Environment {
         Environment {
             infix_operators: "".to_string(),
+            quantitys: HashMap::default(),
+            units: HashMap::default(),
             terms: Vec::new(),
             variables: HashMap::default(),
             equations: Vec::new(),
             to_evaluate: Vec::new(),
             texts: Vec::new()
         }
+    }
+    pub fn get_quantitys(&self) -> &HashMap<String, Spanned<Quantity>>{
+        &self.quantitys
     }
     /// inserts the the given term inside the environment and links the given variable to it.
     /// Returns a reference to the overwritten term, if the variable already existed.
@@ -69,6 +81,10 @@ impl Environment {
 
     pub fn insert_text(&mut self, text:Text) {
         self.texts.push(text);
+    }
+    // returns the replaced quantity, if the key already existed
+    pub fn insert_quantity(&mut self, symbol: String, quantity: Spanned<Quantity>) -> Option<Spanned<Quantity>> {
+        self.quantitys.insert(symbol, quantity)
     }
 
     pub fn evaluate_and_print_to_evaluate(&mut self, full: &str) {
@@ -164,6 +180,18 @@ impl Display for Term {
 impl PTerm {
     pub fn new(content: Term, span: Span) -> PTerm {
         PTerm { content: content, span: span, evaluated: None, unit: None }
+    }
+    /// evaluates the therm. Needs a mutable reference, because it stores the result in the term for future evaluations.
+    /// The env_tracker holds the Term definitions of the variables
+    pub fn evaluate(&mut self, env_tracker: &Environment) -> Result<Number, Vec<Info>>{
+        match &self.evaluated {
+            Some(evaluated) => evaluated.clone(),
+            None => {
+                let res = self.first_evaluate(env_tracker);
+                self.evaluated = Some(res.clone());
+                res
+            },
+        }
     }
     fn first_evaluate(& self, env_tracker: &Environment) -> Result<Number, Vec<Info>> {
         // check if result was evaluated before TODO: actually write the evaluated result

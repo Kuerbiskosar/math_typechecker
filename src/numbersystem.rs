@@ -119,9 +119,10 @@ pub struct Unit
     pub name: Option<String>,
     // example N
     pub symbol: Option<String>,
-    // a unit like Newton is kg * m/s^2 aka. kg^1 * m^1 * s^-2. it will be stroed as vec![("kg", 1), ("m", 1), ("s", -2)]
+    // a unit like Newton is kg * m/s^2 aka. kg^1 * m^1 * s^-2. it will be stored as vec![("kg", 1), ("m", 1), ("s", -2)]
     // I considered using EITHER for the option, but instead, the alternative value is in the symbol field.
-    // -> If there is no Unit, the String is the value instead (no need to use either, otherwise the string would be stored twice)
+    // -> If there is no Unit, the String (key of HashMap) is the value (unit symbol) instead (no need to use either, otherwise the string would be stored twice)
+    // meaning, if Option<Unit> is None, the key is a base unit.
     base_unit: HashMap<String, (Option<Unit>, i32)>,
     // example Force. if this unit got build during a computation, the quantity won't have a name, but 
     // a "base_name" like {mass: 1, length: 1, time: -2}
@@ -398,11 +399,11 @@ pub struct Quantity
     pub name: Option<String>,
     // Symbol like m, v etc.
     pub symbol: Option<String>, // this field allows renaming kg*m/s^2 to N
-    base_quantity: HashMap<String, (Option<Quantity>, i32)>, // base units have their symbol as the key and (None, 1) as the value. By giving a base unit a symbol, there can be multiple different symbols for the same quantity (l and h for distance (h is height))
+    pub base_quantity: HashMap<String, (Option<Quantity>, i32)>, // base units have their symbol as the key and (None, 1) as the value. By giving a base unit a symbol, there can be multiple different symbols for the same quantity (l and h for distance (h is height))
 }
 
 impl Quantity {
-    pub fn new(name: &str, symbol: &str, base_quantitys: Vec<(Quantity, i32)>, quantity_tracker: &mut HashMap<String, HashMap<String, (Option<Quantity>, i32)>>) -> Self {
+    pub fn new(name: &str, symbol: &str, base_quantitys: Vec<(Quantity, i32)>, /*quantity_tracker: &mut HashMap<String, HashMap<String, (Option<Quantity>, i32)>>*/) -> Self {
         //let name = Name::from_str(name).expect("too long names should have been handled on the pharser level");
         
         // // get id, which is not yet used (the loop will only have to run more than once, if we start to remove keys)
@@ -429,12 +430,17 @@ impl Quantity {
                 } // else if exponent = 0 doesn't need any processing (that unit doesn't really exist)
             }
         }
-        quantity_tracker.insert(name.to_string(), new_quantity.clone());
+        //quantity_tracker.insert(name.to_string(), new_quantity.clone());
         Quantity {
             name: Some(name.to_string()),
             symbol: Some(symbol.to_string()),
             base_quantity: to_base_quantitys(&new_quantity),
         }
+    }
+    /// The function executed, to create a new unit with the Quantity <Name>: <Symbol> = <expression> syntax
+    /// The Quantity is derived by evaluating the given expression
+    pub fn new_coded(name: Option<String>, symbol: String, base_quantity: HashMap<String, (Option<Quantity>, i32)>) -> Quantity {
+        Quantity { name, symbol: Some(symbol), base_quantity: base_quantity }
     }
     pub fn new_nameless(base_quantitys: Vec<(Quantity, i32)>) -> Self {
         // // get id, which is not yet used (the loop will only have to run more than once, if we start to remove keys)
@@ -633,15 +639,15 @@ mod tests {
         // let kilometer = Unit::Unit("mm", length, 1000.0); // TODO: i32 as a scalar doesn't cut it. we need fractions.
         // let a: Rc<String> = Rc::new("value".to_string());
         // let a = 0.1;
-        let mut quantity_tracker = HashMap::new();
-        let mass = Quantity::new("mass", "m", Vec::default(), &mut quantity_tracker); // typechecking the exact type of Quantity is impossible, because the available types will only be known at runtime.
+        //let mut quantity_tracker = HashMap::new();
+        let mass = Quantity::new("mass", "m", Vec::default()); // typechecking the exact type of Quantity is impossible, because the available types will only be known at runtime.
         let kilogram = Unit{ name: Some("kilogram".to_string()), quantity: mass.clone(), modifier: 1.0, symbol: None, base_unit: HashMap::from([("kg".to_string(), (None, 1))])};
         let gram = Unit::new_base("gram", "g", &mass, 0.001);
         //let gram = Unit {name: Name::from_str("g").unwrap(), quantity: mass, modifier: 0.001};
         let a = Number{ value: 1.0, unit: kilogram };
         let b = Number {value:1.0,unit:gram};
 
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
+        let length = Quantity::new("length", "l", Vec::default());
         println!("{}", (a.clone()+b.clone()).unwrap());
         println!("{}", (a.clone()*b.clone()));
         println!("{}", (a.unit.quantity));
@@ -650,8 +656,7 @@ mod tests {
     }
     #[test]
     fn test_addition() {
-        let mut quantity_tracker = HashMap::new();
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
+        let length = Quantity::new("length", "l", Vec::default());
         let mm = Unit::new_base("millimeter", "mm", &length, 1e-3);
         let m = Unit::new_base("meter", "m", &length, 1.0);
         let a = Number{ value: 1.0, unit: m};
@@ -663,8 +668,7 @@ mod tests {
     }
     #[test]
     fn test_multiplication_square() {
-        let mut quantity_tracker = HashMap::new();
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
+        let length = Quantity::new("length", "l", Vec::default());
         let mm = Unit::new_base("millimeter", "mm", &length, 1e-3);
         let m = Unit::new_base("meter", "m", &length, 1.0);
         let a = Number{ value: 1.0, unit: m};
@@ -675,10 +679,9 @@ mod tests {
     }
     #[test]
     fn test_multiplication_derived_units_cancellation() {
-        let mut quantity_tracker = HashMap::new();
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
-        let time = Quantity::new("time", "t", Vec::default(), &mut quantity_tracker);
-        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)], &mut quantity_tracker);
+        let length = Quantity::new("length", "l", Vec::default());
+        let time = Quantity::new("time", "t", Vec::default());
+        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
         let m = Unit::new_base("meter", "m", &length, 1.0);
         let s = Unit::new_base("seconds", "s", &time, 1.0);
@@ -708,11 +711,10 @@ mod tests {
     }
     #[test]
     fn test_multiplication_unit_derivation() {
-        let mut quantity_tracker = HashMap::new();
-        let test = Quantity::new("test", "?", Vec::default(), &mut quantity_tracker);
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
-        let time = Quantity::new("time", "t", Vec::default(), &mut quantity_tracker);
-        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)], &mut quantity_tracker);
+        let test = Quantity::new("test", "?", Vec::default());
+        let length = Quantity::new("length", "l", Vec::default());
+        let time = Quantity::new("time", "t", Vec::default());
+        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
         let u = Unit::new_derived("unitless", "-", Vec::default());
         let t = Unit::new_base("test", "~", &test, 1.0);
@@ -732,11 +734,10 @@ mod tests {
     // TODO: add unit tests for division
     #[test]
     fn is_comparision_deterministic() {
-        let mut quantity_tracker = HashMap::new();
-        let test = Quantity::new("test", "?", Vec::default(), &mut quantity_tracker);
-        let length = Quantity::new("length", "l", Vec::default(), &mut quantity_tracker);
-        let time = Quantity::new("time", "t", Vec::default(), &mut quantity_tracker);
-        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)], &mut quantity_tracker);
+        let test = Quantity::new("test", "?", Vec::default());
+        let length = Quantity::new("length", "l", Vec::default());
+        let time = Quantity::new("time", "t", Vec::default());
+        let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
         let u = Unit::new_derived("unitless", "-", Vec::default());
         let t = Unit::new_base("test", "~", &test, 1.0);

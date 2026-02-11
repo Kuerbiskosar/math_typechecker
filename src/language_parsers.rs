@@ -1,8 +1,10 @@
-use crate::numbersystem::Number;
+use std::collections::HashMap;
+
+use crate::numbersystem::{Number, Quantity};
 use crate::term::{Environment, Operator, PTerm, Term, Text, TextType};
-use crate::pharsers::{Parsable, ParseResult, alt, char, item, item_satisfies, many, map, ignore_result, nat, obligatory_space, line_space, operator, optional, some, space, sym, this_string, token, within};
+use crate::pharsers::{Parsable, ParseResult, Spanned, alt, char, ignore_result, item, item_satisfies, line_space, many, map, nat, obligatory_space, operator, optional, some, space, sym, this_string, token, until, within};
 use crate::{numbersystem::Unit, pharsers::{Info, ShallowParser, Span}};
-use crate::syntax_constants::{LINE_COMMENT, EVALUATE, ASSIGNMENT};
+use crate::syntax_constants::{ASSIGNMENT, EVALUATE, LINE_COMMENT, QUANTITY_DEF_KEYWORD};
 // In this module, the language specific parsers are defined, to generate Terms etc.
 
 /// returns a string of digits, ignoring separators
@@ -239,6 +241,101 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
             }
         }
         //Err((to_parse, _)) => ((), to_parse.restore(shallow_parser)),
+    }
+}
+
+fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
+    fn environment_from_quantitys<'b>(env_tracker: &Environment) -> Environment {
+        let mut quantity_environment = Environment::new();
+        for (symbol, quantity) in env_tracker.clone().get_quantitys() { // must clone to modify entries.
+            let unit = Unit::new_base("", symbol, quantity.get_content(), 1.0);
+            let number = Number { value: 1.0, unit: unit };
+            let expression = PTerm::new(Term::Num(number), *quantity.get_span());
+            quantity_environment.insert_variable(symbol.to_owned(), expression);
+        };
+        quantity_environment
+    }
+    // parses everything after Quantity Name: symbol
+    // which is " = <expression>" and returns the expected quantity
+    // if the expression can't be evaluated, this parser suceeds but adds an error info to the parsable.
+    fn derived_quantity<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &Environment) -> ParseResult<'a, Quantity> {
+        let shallow_parser = ShallowParser::new(&to_parse);
+        let res = 'inner: {
+            let eq_res = token(to_parse, |x|this_string(x, ASSIGNMENT));
+            let Ok((_, to_parse)) = eq_res else {break 'inner Err(eq_res.err().unwrap())};
+
+            let expr_res = parse_expression(to_parse);
+            let Ok((mut term, to_parse)) = expr_res else {break 'inner Err(expr_res.err().unwrap())};
+
+            // first create an environment with the existing quantitys as variables
+            let quantity_env = environment_from_quantitys(env_tracker);
+            // then evaluate the term which defines the new quantity
+            match term.evaluate(&quantity_env) {
+                Ok(number) => {
+                    Ok((number.unit.quantity, to_parse))
+                },
+                Err(info_vec) => {
+                    // when we reach this point, we want to give this error to the user.
+                    let info = Info{ msg: format!("Could not evaluate expression in Quantity definition. Threating this definition as unitless. The returned information vector was: {:?}", info_vec),
+                    pos: term.span };
+                    let to_parse = to_parse.restore(shallow_parser);
+                    let to_parse = to_parse.add_error(info);
+                    //break 'inner Err((to_parse.restore(), info));
+                    Ok((Unit::unitless().quantity, to_parse))
+                },
+            }
+        };
+        match res {
+            ok @ Ok(_) => ok,
+            Err((to_parse, info)) => {
+                let to_parse = to_parse.restore(shallow_parser);
+                return Err((to_parse,info))
+            },
+        }
+    }
+
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let res = 'inner: {
+        let quantity_def_start_pos = to_parse.span.start;
+        let keyword_res = this_string(to_parse, QUANTITY_DEF_KEYWORD);
+        let Ok((_, to_parse)) = keyword_res else {break 'inner Err(keyword_res.err().unwrap())};
+        let (_, to_parse) = space(to_parse).expect("space parser can't fail, but failed anyways");
+        // parses the name, which is terminated by either : or newline (0xA).
+        let (name, to_parse) = optional(to_parse,
+            |x|until(x, |x|item_satisfies(x, |c|c == ':' || c == (0xA as char))),
+            |x, (quantity_name, _separator)| Ok((Some(quantity_name), x)),
+            None).expect("optional parser can't fail");
+
+        let symbol_res = token(to_parse, sym);
+        let Ok((symbol, to_parse)) = symbol_res else {break 'inner Err(symbol_res.err().unwrap())};
+        
+        // parse base quantitys for derived
+        // Use the usual math parsing to parse the expression (like l^2 for area definition) This way the existing parsing can be used.
+        
+        let (base_quantity, to_parse) = optional(to_parse,
+            |x|derived_quantity(x, env_tracker),
+        |to_parse, quantity|Ok((quantity.base_quantity, to_parse)),
+        HashMap::from([(symbol.clone(), (None, 1))])).expect("optional parser can't fail");
+        let quantity_def_end_pos = to_parse.span.start;
+
+        let quantity = Quantity::new_coded(name, symbol.to_owned(), base_quantity);
+        let exists = env_tracker.insert_quantity(symbol.clone(), Spanned::new(quantity, quantity_def_start_pos, quantity_def_end_pos));
+        let to_parse = match exists {
+            Some(overwritten) => to_parse.add_error(Info {
+                // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
+                msg: format!("Quantity '{}' already exists as '{}'. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", symbol, overwritten.get_content()),
+                pos: Span{start: quantity_def_start_pos, end: quantity_def_end_pos},
+            }),
+            None => to_parse,
+        };
+        Ok(((), to_parse))
+    };
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
     }
 }
 
@@ -493,6 +590,8 @@ fn parse_function<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
 
 #[cfg(test)]
 mod tests {
+    use std::default;
+
     use super::*;
 
     #[test]
@@ -546,20 +645,20 @@ mod tests {
             Parsable::with_str_offset("", 14)));
         assert_eq!(left, expected_result);
     }
-    #[test]
-    fn newline_parsing() {
-        let file_path = "testfile.tc";
-        println!("pattern: {:?}", file_path);
-        let contents = std::fs::read_to_string(file_path)
-            .expect("Should have been able to read the file");
-        for char in contents.chars() {
-            if char == 0xA as char {
-                println!("got a newline character");
-                continue;
-            }
-            print!("<{}>", char.escape_unicode());
-        }
-    }
+    // #[test]
+    // fn newline_parsing() {
+    //     let file_path = "testfile.tc";
+    //     println!("pattern: {:?}", file_path);
+    //     let contents = std::fs::read_to_string(file_path)
+    //         .expect("Should have been able to read the file");
+    //     for char in contents.chars() {
+    //         if char == 0xA as char {
+    //             println!("got a newline character");
+    //             continue;
+    //         }
+    //         print!("<{}>", char.escape_unicode());
+    //     }
+    // }
     #[test]
     fn test_parse_expression_number () {
         let to_parse = Parsable::with_string("7.3 = {}");
@@ -621,6 +720,31 @@ mod tests {
                                              Box::new(PTerm::new(Term::Num(seven), Span::new(2,3)))),
                                              Span::new(0, 3));
         expected_environment.insert_to_evaluate(expected_term, Span::new(7, 7));
+        assert_eq!(env_tracker, expected_environment);
+    }
+    #[test]
+    fn test_parse_quantity_definition() {
+        let to_parse = Parsable::with_string(
+            "Quantity length: l\n\
+            Quantity area: A = l*l");
+        let mut env_tracker = Environment::new();
+        let (_, parse_result) = parse_quantity_definition(to_parse, &mut env_tracker)
+            .expect("Quantity definition parser should not fail for this input");
+        let expected_quantity_l = Quantity::new("length", "l", Vec::default());
+        let expected_s_quantity = Spanned::new(expected_quantity_l.clone(), 0, 18);
+        let mut expected_environment = Environment::new();
+        expected_environment.insert_quantity("l".to_owned(), expected_s_quantity);
+        assert_eq!(env_tracker, expected_environment);
+        let expected_parse_result = Parsable::with_str_offset("\nQuantity area: A = l*l", 18);
+        assert_eq!(parse_result, expected_parse_result);
+        
+        let (_, to_parse) = space(parse_result).expect("space failed, even thought it shouldn't");
+
+        let (_, parse_result) = parse_quantity_definition(to_parse, &mut env_tracker)
+            .expect("Quantity definition parser should not fail for this input");
+        let expected_quantity_a = Quantity::new("area", "A", vec![(expected_quantity_l, 2)]);
+        let expected_s_quantity = Spanned::new(expected_quantity_a.clone(), 19, 41);
+        expected_environment.insert_quantity("A".to_owned(), expected_s_quantity);
         assert_eq!(env_tracker, expected_environment);
     }
 }
