@@ -245,16 +245,6 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
 }
 
 fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
-    fn environment_from_quantitys<'b>(env_tracker: &Environment) -> Environment {
-        let mut quantity_environment = Environment::new();
-        for (symbol, quantity) in env_tracker.clone().get_quantitys() { // must clone to modify entries.
-            let unit = Unit::new_base("", symbol, quantity.get_content(), 1.0);
-            let number = Number { value: 1.0, unit: unit };
-            let expression = PTerm::new(Term::Num(number), *quantity.get_span());
-            quantity_environment.insert_variable(symbol.to_owned(), expression);
-        };
-        quantity_environment
-    }
     // parses everything after Quantity Name: symbol
     // which is " = <expression>" and returns the expected quantity
     // if the expression can't be evaluated, this parser suceeds but adds an error info to the parsable.
@@ -267,12 +257,10 @@ fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mu
             let expr_res = parse_expression(to_parse);
             let Ok((mut term, to_parse)) = expr_res else {break 'inner Err(expr_res.err().unwrap())};
 
-            // first create an environment with the existing quantitys as variables
-            let quantity_env = environment_from_quantitys(env_tracker);
-            // then evaluate the term which defines the new quantity
-            match term.evaluate(&quantity_env) {
-                Ok(number) => {
-                    Ok((number.unit.quantity, to_parse))
+            // evaluate the term which defines the new quantity
+            match term.evaluate_quantity(&env_tracker) {
+                Ok(quantity) => {
+                    Ok((quantity, to_parse))
                 },
                 Err(info_vec) => {
                     // when we reach this point, we want to give this error to the user.

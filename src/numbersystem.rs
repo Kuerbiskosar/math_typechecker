@@ -473,6 +473,10 @@ impl Quantity {
             base_quantity: to_base_quantitys(&new_quantity),
         }
     }
+    pub fn get_symbol(&self) -> String {
+        // note: this is the display function
+        format!("{}", self.symbol.to_owned().unwrap_or_else(|| show_unit_pretty(&self.base_quantity, self.symbol.clone())))
+    }
     
 }
 impl Display for Quantity {
