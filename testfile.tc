@@ -7,6 +7,10 @@ c = 1 + 2 + 3
 d = 1/2/3/4
 e = 1+2 * 3
 
+constant = 0.001
+m = 1
+expected_result = constant * m
+
 multiline = 1 +
 5 + 7
 -- using variables

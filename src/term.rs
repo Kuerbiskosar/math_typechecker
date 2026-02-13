@@ -102,6 +102,27 @@ impl Environment {
             None => None,
         }
     }
+    /// gets the quantity from the symbol in the quantity map, including the position it was defined
+    /// returns None if the quantity doesn't exist.
+    pub fn get_quantity(&self, symbol: &str) -> Option<Spanned<Quantity>> {
+        let quantity_index = self.quantity_map.get(symbol)?;
+        Some(self.quantitys[*quantity_index].clone())
+    }
+    
+    pub fn insert_unit(&mut self, symbol: String, unit: Spanned<Unit>) -> Option<&Spanned<Unit>> {
+        self.units.push(unit);
+        let unit_index = self.units.len()-1;
+
+        let overwritten_term = self.unit_map.insert(symbol, unit_index).clone();
+        match &overwritten_term {
+            Some(old_index) => Some(&self.units[*old_index]),
+            None => None,
+        }
+    }
+    pub fn get_unit(&self, symbol: &str) -> Option<Spanned<Unit>> {
+        let unit_index = self.unit_map.get(symbol)?;
+        Some(self.units[*unit_index].clone())
+    }
 
     pub fn evaluate_and_print_to_evaluate(&mut self, full: &str) {
         for (term_index, res_position) in self.to_evaluate.clone() { // cloned to not run into borrow issues
@@ -155,7 +176,7 @@ trait Evaluatable {
 }
 impl Evaluatable for Spanned<Quantity> {
     fn first_evaluate(&self, _variable_map: &HashMap<String, usize>, _variables: &Vec<impl Evaluatable>) -> Result<Number, Vec<Info>> {
-        let unit = Unit::new_base("", &self.get_content().get_symbol(), self.get_content(), 1.0);
+        let unit = Unit::new_base(None, self.get_content().get_symbol(), self.get_content(), 1.0);
         let number = Number { value: 1.0, unit: unit };
         Ok(number)
     }
@@ -246,9 +267,13 @@ impl PTerm {
     }
     /// treats all variables as units.
     /// Used to get one unit out of [kg*m/s^2]. This can be used for typechecking!
-    pub fn evaluate_unit(&self, env_tracker: &Environment) -> Result<Unit, Vec<Info>> {
-        match self.first_evaluate(&env_tracker.quantity_map, &env_tracker.quantitys) {
-            Ok(num) => Ok(num.unit),
+    /// gives the value of the expression as the units modifier. ex. [60 * 1 min] has the value 60.
+    /// Tha will be used in the definition for hour.
+    pub fn evaluate_unit(&self, env_tracker: &Environment) -> Result<(f64, Unit), Vec<Info>> {
+        match self.first_evaluate(&env_tracker.unit_map, &env_tracker.units) {
+            Ok(num) => {
+                Ok((num.value, num.unit))
+            },
             Err(infos) => Err(infos),
         }
     }

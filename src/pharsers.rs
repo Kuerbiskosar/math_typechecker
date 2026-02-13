@@ -414,7 +414,7 @@ pub fn line_space<'a>(to_parse: Parsable<'a>) ->ParseResult<'a, String> {
 // now it starts to get language specific! //////////////////////////////////////////
 // The following pharsers care about space before and after them.
 
-/// Pharses natural numbers up to 2^63 - 1 (that's the max i64)
+/// Pharses natural numbers
 pub fn nat<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
     match some(to_parse, digit) {
         ok @ Ok(_) => ok,

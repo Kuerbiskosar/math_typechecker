@@ -123,7 +123,7 @@ pub struct Unit
     // I considered using EITHER for the option, but instead, the alternative value is in the symbol field.
     // -> If there is no Unit, the String (key of HashMap) is the value (unit symbol) instead (no need to use either, otherwise the string would be stored twice)
     // meaning, if Option<Unit> is None, the key is a base unit.
-    base_unit: HashMap<String, (Option<Unit>, i32)>,
+    pub base_unit: HashMap<String, (Option<Unit>, i32)>,
     // example Force. if this unit got build during a computation, the quantity won't have a name, but 
     // a "base_name" like {mass: 1, length: 1, time: -2}
     pub quantity: Quantity,
@@ -292,9 +292,20 @@ impl Div for Unit {
 }
 
 impl Unit {
-    /// panics if the given string is too long
     /// a new unit based on a base quantity
-    pub fn new_base(name: &str, symbol: &str, quantity: &Quantity, modifier: f64) -> Unit {
+    pub fn new_base(name: Option<String>, symbol: String, quantity: &Quantity, modifier: f64) -> Unit {
+        // The base unit has its symbol stored in the key of quantity... maybe symbol is fully redundand?
+        Unit {
+            //name: Some(Name::from_str(name).unwrap()),
+            name: name,
+            symbol: None,
+            base_unit: HashMap::from([(symbol, (None, 1))]),
+            quantity: quantity.clone(),
+            modifier: modifier }
+    }
+    /// creates a new base with low boilerplate inputs (string references instead of optional strings).
+    /// This method is meant to create units for testing.
+    pub fn new_test_base(name: &str, symbol: &str, quantity: &Quantity, modifier: f64) -> Unit {
         // The base unit has its symbol stored in the key of quantity... maybe symbol is fully redundand?
         Unit {
             //name: Some(Name::from_str(name).unwrap()),
@@ -304,6 +315,7 @@ impl Unit {
             quantity: quantity.clone(),
             modifier: modifier }
     }
+
     /// creates a new derived unit. if base_units is empty, it will create a unitless, unnamed, base_unit with modifier = 1
     pub fn new_derived(name: &str, symbol: &str, base_units: Vec<(Unit, i32)>) -> Unit {
         
@@ -337,6 +349,15 @@ impl Unit {
             base_unit: new_unit,
             quantity: new_quantity,
             modifier: modifier,
+        }
+    }
+    pub fn new_coded(name: Option<String>, symbol: String, base_unit: HashMap<String, (Option<Unit>, i32)>, modifier: f64, quantity: Quantity) -> Unit {
+        Unit {
+            name: name,
+            symbol: Some(symbol),
+            base_unit,
+            quantity,
+            modifier,
         }
     }
     /// creates a new unit with the given name and symbol, by splitting the given string into unit symbols -> probably already not doing it trough strings anymore.
@@ -387,7 +408,12 @@ impl Unit {
     }
 
     pub fn unitless() -> Unit {
-        Unit::new_derived("unitless", "-", Vec::default())
+        Unit { name: None,
+            symbol: None,
+            base_unit: HashMap::new(),
+            quantity: Quantity::new_nameless(Vec::new()),
+            modifier: 1.0
+        }
     }
 }
 
@@ -646,7 +672,7 @@ mod tests {
         //let mut quantity_tracker = HashMap::new();
         let mass = Quantity::new("mass", "m", Vec::default()); // typechecking the exact type of Quantity is impossible, because the available types will only be known at runtime.
         let kilogram = Unit{ name: Some("kilogram".to_string()), quantity: mass.clone(), modifier: 1.0, symbol: None, base_unit: HashMap::from([("kg".to_string(), (None, 1))])};
-        let gram = Unit::new_base("gram", "g", &mass, 0.001);
+        let gram = Unit::new_test_base("gram", "g", &mass, 0.001);
         //let gram = Unit {name: Name::from_str("g").unwrap(), quantity: mass, modifier: 0.001};
         let a = Number{ value: 1.0, unit: kilogram };
         let b = Number {value:1.0,unit:gram};
@@ -661,8 +687,8 @@ mod tests {
     #[test]
     fn test_addition() {
         let length = Quantity::new("length", "l", Vec::default());
-        let mm = Unit::new_base("millimeter", "mm", &length, 1e-3);
-        let m = Unit::new_base("meter", "m", &length, 1.0);
+        let mm = Unit::new_test_base("millimeter", "mm", &length, 1e-3);
+        let m = Unit::new_test_base("meter", "m", &length, 1.0);
         let a = Number{ value: 1.0, unit: m};
         let b = Number{ value: 2.0, unit: mm};
         let c = a + b;
@@ -673,8 +699,8 @@ mod tests {
     #[test]
     fn test_multiplication_square() {
         let length = Quantity::new("length", "l", Vec::default());
-        let mm = Unit::new_base("millimeter", "mm", &length, 1e-3);
-        let m = Unit::new_base("meter", "m", &length, 1.0);
+        let mm = Unit::new_test_base("millimeter", "mm", &length, 1e-3);
+        let m = Unit::new_test_base("meter", "m", &length, 1.0);
         let a = Number{ value: 1.0, unit: m};
         let b = Number{ value: 2.0, unit: mm};
         let c = a * b;
@@ -687,8 +713,8 @@ mod tests {
         let time = Quantity::new("time", "t", Vec::default());
         let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
-        let m = Unit::new_base("meter", "m", &length, 1.0);
-        let s = Unit::new_base("seconds", "s", &time, 1.0);
+        let m = Unit::new_test_base("meter", "m", &length, 1.0);
+        let s = Unit::new_test_base("seconds", "s", &time, 1.0);
         let vel = Unit::new_derived("si_velocity", "ↇ", vec![(m, 1), (s.clone(), -1)]);
 
         let a = Number{value: 1.0, unit: s};
@@ -721,9 +747,9 @@ mod tests {
         let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
         let u = Unit::new_derived("unitless", "-", Vec::default());
-        let t = Unit::new_base("test", "~", &test, 1.0);
-        let m = Unit::new_base("meter", "m", &length, 1.0);
-        let s = Unit::new_base("seconds", "s", &time, 1.0);
+        let t = Unit::new_test_base("test", "~", &test, 1.0);
+        let m = Unit::new_test_base("meter", "m", &length, 1.0);
+        let s = Unit::new_test_base("seconds", "s", &time, 1.0);
         let vel = Unit::new_derived("si_velocity", "ↇ", vec![(m.clone(), 1), (s.clone(), -1)]);
         //println!("quantity of velocity: {:?}", vel.quantity);
         let a = Number{value: 1.0, unit: m};
@@ -744,9 +770,9 @@ mod tests {
         let velocity = Quantity::new("velocity", "v", vec![(length.clone(), 1), (time.clone(), -1)]);
         
         let u = Unit::new_derived("unitless", "-", Vec::default());
-        let t = Unit::new_base("test", "~", &test, 1.0);
-        let m = Unit::new_base("meter", "m", &length, 1.0);
-        let s = Unit::new_base("seconds", "s", &time, 1.0);
+        let t = Unit::new_test_base("test", "~", &test, 1.0);
+        let m = Unit::new_test_base("meter", "m", &length, 1.0);
+        let s = Unit::new_test_base("seconds", "s", &time, 1.0);
         let vel = Unit::new_derived("si_velocity", "ↇ", vec![(m.clone(), 1), (s.clone(), -1)]);
 
 
