@@ -139,7 +139,7 @@ fn e_notation<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, (bool, usize, usize
 /// If no unit is provided, the number is unitless 5 [-]
 /// TODO: Complex numbers should be parsed by this too.
 /// TODO: binary and hex representation would be cool.
-fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
+fn number<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b Environment) -> ParseResult<'a, PTerm> {
     let shallow_parser = ShallowParser::new(&to_parse);
     let res = 'inner: {
         let (_, to_parse) = space(to_parse)?; // space can't fail
@@ -151,8 +151,14 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         // the sucess_fn argument here is the identity function, because everything is handled in the e_notation parser.
         // optional parser can't fail
         let (exponent, to_parse) = optional(to_parse, e_notation, |a, b|Ok((b, a)), (false, 0, 0, 1))?;
-        let number_end_pos = to_parse.span.start;
         //println!("base: {:?}, exponent: {:?}", base, exponent);
+        
+        let unit_res = optional(to_parse, 
+            |to_parse|unit(to_parse, env_tracker),
+            |to_parse, res|Ok((res, to_parse)),
+            Unit::unitless());
+        let Ok((unit, to_parse)) = unit_res else {break 'inner Err(unit_res.err().unwrap())};
+        let number_end_pos = to_parse.span.start;
         // this is temporary, until I rework how values are stored (don't really fancy using floats)
         let value = {
             let comma_digits = base.3 as u32;
@@ -169,7 +175,7 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         // convert the collected information into the numbersystem::Number type.
         let term = Term::Num(Number {
             value: value,
-            unit: Unit::unitless(), // TODO: parse unit
+            unit,
         });
         let p_term = PTerm::new(term, Span{ start: number_star_pos, end: number_end_pos });
         Ok((p_term, to_parse))
@@ -179,6 +185,65 @@ fn number<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
         Err((to_parse, info)) => {
             let to_parse = to_parse.restore(shallow_parser);
             return Err((to_parse,info))
+        },
+    }
+}
+
+/// parses a unit after a Number, including the space before (which can't be a newline).
+/// either [some_unit_expression] or unit_symbol
+/// doesn't parse the optional space before the unit.
+fn unit<'a, 'b> (to_parse: Parsable<'a>, env_tracker: &'b Environment) -> ParseResult<'a, Unit> {
+    let shallow_parser = ShallowParser::new(&to_parse);
+    let (_, to_parse) = line_space(to_parse)?; // space parser can't fail
+    let sym_start_pos = to_parse.span.start;
+    match sym(to_parse) {
+        Ok((sym, to_parse)) => {
+            // symbol which represents unit
+            match env_tracker.get_unit(&sym) {
+                Some(unit) => return Ok((unit.get_content().to_owned(), to_parse)),
+                None => {
+                    let sym_end_pos = to_parse.span.start;
+                    let to_parse = to_parse.restore(shallow_parser);
+                    let info = Info {msg: format!("couldn't find unit: {}", sym),
+                        pos: Span::new(sym_start_pos, sym_end_pos)};
+                    return Err((to_parse, info))
+                },
+            }
+        },
+        Err((to_parse, _info)) => {
+            match within(to_parse, |x|char(x, '['),
+                |x|parse_expression(x, env_tracker),
+                |x|char(x, ']'))
+            {
+                Ok((unit_expr, to_parse)) => {
+                    // unit expression found!
+                    match unit_expr.evaluate_unit(env_tracker) {
+                        Ok((modifier, unit)) => {
+                            let unit = Unit::new_coded(None, None, unit.base_unit, modifier, unit.quantity);
+                            return Ok((unit, to_parse));
+                        },
+                        Err(infos) => {
+                            let sym_end_pos = to_parse.span.start;
+                            //let to_parse = to_parse.restore(shallow_parser);
+                            let info = Info {msg: format!("couldn't evaluate unit definition, because: {:?}", infos),
+                                pos: Span::new(sym_start_pos, sym_end_pos)};
+                            let to_parse = to_parse.add_error(info);
+                            //return Err((to_parse, info))
+                            Ok((Unit::unitless(), to_parse))
+                        },
+                    }
+                },
+                Err((to_parse, info)) => {
+                    // neither symbol, nor unit expression
+                    // instead of returning unitless, an error is given, to not consume whitespace after the number.
+                    // use this within an optional parser instead, if no explicit unit definition should be unitless.
+                    let sym_end_pos = to_parse.span.start;
+                    let to_parse = to_parse.restore(shallow_parser);
+                    let info = Info {msg: format!("No unit found. Error: {:?}", info),
+                        pos: Span::new(sym_start_pos, sym_end_pos)};
+                    return Err((to_parse, info))
+                },
+            }
         },
     }
 }
@@ -203,23 +268,27 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
     //     &|x|parse_assignment(x, env_tracker.clone())
     // ]);
     let res = parse_assignment(to_parse, env_tracker)
-        .or_else(|(x, e1)|parse_comment(x, env_tracker)
-        .or_else(|(x, e2)|ignore_result(x, obligatory_space) // this makes sure that all trailing whitespaces are parsed
-        .or_else(|(x, e3)|parse_to_evaluate(x, env_tracker) // this makes sure that all trailing whitespaces are parsed
+        .or_else(|(x, e_assignment)|parse_comment(x, env_tracker)
+        .or_else(|(x, e_comment)|parse_to_evaluate(x, env_tracker)
+        .or_else(|(x, e_evaluate)|parse_quantity_definition(x, env_tracker)
+        .or_else(|(x, e_quantity)|parse_unit_definition(x, env_tracker)
+        .or_else(|(x, e_unit)|ignore_result(x, obligatory_space) // this makes sure that all trailing whitespaces are parsed
         .or_else(
-            |(x, e4)| {
+            |(x, e_trailing_space)| {
                 let info = Info { msg: format!("Unexpected pattern. Expected assignment, comment or trailing whitespace. \
                                             The errors of these parsers are the following:\n \
-                                            assignment:\t{:?}\n \
-                                            comment:\t{:?}\n \
-                                            trailing whitespace:\t{:?}\n
-                                            evaluation:\t{:?}\n
-                                            ", e1, e2, e3, e4),
+                                            assignment:\t{e_assignment:?}\n \
+                                            comment:\t{e_comment:?}\n \
+                                            evaluation:\t{e_evaluate:?}\n
+                                            quantity_definition:\t{e_quantity:?}\n
+                                            unit_definition:\t{e_unit:?}\n
+                                            trailing whitespace:\t{e_trailing_space:?}\n
+                                            "),
                                         pos: Span{start: x.span.start, end: x.span.start}
                                       };
                 Err((x, info))
                 }
-            ))));
+            )))))); // one bracket for each parser in the .or_else chain, to keep errors in the scope of the last or_else.
 
     match res {
         Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
@@ -255,7 +324,7 @@ fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mu
             let eq_res = token(to_parse, |x|this_string(x, ASSIGNMENT));
             let Ok((_, to_parse)) = eq_res else {break 'inner Err(eq_res.err().unwrap())};
 
-            let expr_res = parse_expression(to_parse);
+            let expr_res = parse_expression(to_parse, &env_tracker);
             let Ok((term, to_parse)) = expr_res else {break 'inner Err(expr_res.err().unwrap())};
 
             // evaluate the term which defines the new quantity
@@ -363,14 +432,12 @@ fn parse_unit_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
             let eq_res = token(to_parse, |x|this_string(x, ASSIGNMENT));
             let Ok((_, to_parse)) = eq_res else {break 'inner Err(eq_res.err().unwrap())};
 
-            let expr_res = parse_expression(to_parse);
+            let expr_res = parse_expression(to_parse, &env_tracker);
             let Ok((term, to_parse)) = expr_res else {break 'inner Err(expr_res.err().unwrap())};
 
-            println!("derived_unit function going to evaluate: {:?}", term);
             // evaluate the term which defines the new quantity
             match term.evaluate_unit(&env_tracker) {
                 Ok((modifier, unit)) => {
-                    println!("evaluated to modifier: {} and Unit: {:?}", modifier, unit);
                     Ok(((modifier, unit), to_parse))
                 },
                 Err(info_vec) => {
@@ -422,7 +489,7 @@ fn parse_unit_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
             |x|derived_unit(x, env_tracker),
             |to_parse, (modifier, unit)| {
                 // applies the name and symbol to the derived unit
-                let unit = Unit::new_coded(name.clone(), symbol.clone(), unit.base_unit, modifier, unit.quantity);        
+                let unit = Unit::new_coded(name.clone(), Some(symbol.clone()), unit.base_unit, modifier, unit.quantity);
                 Ok((Some(unit), to_parse))
             },
             None).expect("optional parser can't fail");
@@ -509,7 +576,7 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Env
         let eq_result = token(to_parse, |x|this_string(x, ASSIGNMENT));
         let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
 
-        let expr_result = parse_expression(to_parse);
+        let expr_result = parse_expression(to_parse, &env_tracker);
         let Ok((expression, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
 
         // at this point in the function we start modifying the env_tracker.
@@ -538,7 +605,7 @@ pub fn parse_assignment<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Env
 pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
     let shallow_parser = ShallowParser::new(&to_parse);
     let res: ParseResult<'a, ()> = 'inner: {
-        let expr_result = parse_expression(to_parse);
+        let expr_result = parse_expression(to_parse, &env_tracker);
         let Ok((term, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
         
         let pat_result = parse_evaluation_pattern(to_parse);
@@ -582,20 +649,20 @@ pub fn parse_evaluation_pattern<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, S
 
 /// Note: this parser deletes spaces when it fails. TODO: fix.
 /// Questionmakrs should only be placed after unfailable parsers like space and many.
-fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
+fn parse_expression<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b Environment) -> ParseResult<'a, PTerm> {
     let shallow_parser = ShallowParser::new(&to_parse);
     let res: ParseResult<'a, PTerm> = 'inner: {
         let (_, to_parse) = space(to_parse)?;
         // TODO: put this into a function, because this code is used twice
         let first_res = alt(to_parse, vec![
-        &number,
-        &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
+        &|x|number(x, &env_tracker),
+        &parse_variable, // note: Checking if the variable exists is done in the evaluation stage. That way, variables can be defined further down. This allows recursion.
         &parse_function, // when implemented, this (probably) has to happen before symbol parsing
-        &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
+        &|x|within(x, |x|char(x, '('), |x|parse_expression(x, env_tracker), |x|char(x, ')')) // nesting is free.
         // TODO: parse single operator function and stuff like sqrt_3(5)
         ]);
         let Ok((first, to_parse)) = first_res else {break 'inner Err(first_res.err().unwrap())};
-        break 'inner parse_expression_prime(to_parse, first);
+        break 'inner parse_expression_prime(to_parse, first, &env_tracker);
     };
     let out = match res {
         ok @ Ok(_) => ok,
@@ -606,7 +673,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
     };
     return out; // return needed, because the helper functions are defined after this.
 
-    fn parse_expression_prime<'a>(to_parse: Parsable<'a>, first: PTerm) -> ParseResult<'a, PTerm> {
+    fn parse_expression_prime<'a, 'b>(to_parse: Parsable<'a>, first: PTerm, env_tracker: &'b Environment) -> ParseResult<'a, PTerm> {
     let shallow_parser = ShallowParser::new(&to_parse);
     let res = 'inner: {
         // get the next operator, to be able to assemble right and left term
@@ -615,14 +682,14 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
             Ok(ok) => ok,
             Err((to_parse, _)) => break 'inner Ok((first, to_parse)), // if there is no operator, we reached the end of the expression
         };
-        let rhs_result = parse_expression_rhs(to_parse.restore(shallow_parser));
+        let rhs_result = parse_expression_rhs(to_parse.restore(shallow_parser), &env_tracker);
         let Ok((second, to_parse)) = rhs_result else {break 'inner Err(rhs_result.err().unwrap())};
         
         let span_start = first.span.start;
         let span_end = second.span.end;
         let recursive_first = PTerm::new(Term::DuOp(Box::new(first), op1, Box::new(second)),
             Span{ start: span_start, end: span_end });
-        parse_expression_prime(to_parse, recursive_first)
+        parse_expression_prime(to_parse, recursive_first, &env_tracker)
     };
     match res {
         ok @ Ok(_) => ok,
@@ -635,7 +702,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
 
     /// gets the left hand side, given a string containing op1 num op2 num ...
     /// This could be num or num op2 num..., depending on the precedence and associativity of op1 and op2.
-    fn parse_expression_rhs<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
+    fn parse_expression_rhs<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b Environment) -> ParseResult<'a, PTerm> {
         let shallow_parser = ShallowParser::new(&to_parse);
         let res = 'inner: {
             // to parse contains _ op1 n2 op2 n3 ...
@@ -645,10 +712,10 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
             let (_, to_parse) = space(to_parse)?;
             // to parse contains _ _ n2 op2 n3 ...
             let second_res = alt(to_parse, vec![
-                &number,
+                &|x|number(x, &env_tracker),
                 &parse_variable, // note: I can't know if the parsed sym was defined. That must be handled in the evaluation stage.
                 &parse_function,
-                &|x|within(x, |x|char(x, '('), parse_expression, |x|char(x, ')')) // nesting is free.
+                &|x|within(x, |x|char(x, '('), |x|parse_expression(x, env_tracker), |x|char(x, ')')) // nesting is free.
                 ]); // if this parser fails, the expession ends with a operator which is invalid.
             let Ok((second, to_parse)) = second_res else {break 'inner Err(second_res.err().unwrap())};
 
@@ -666,7 +733,7 @@ fn parse_expression<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, PTerm> {
                         // at this point, the expression is parsed to _ op1(+) second * 3^2
                         // (notice how we don't update to_parse, when parsing op2)
                         // here, parse expression should output 3^2, as that's the left hand side of op2.
-                        let third_res = parse_expression_rhs(modified_to_parse.restore(shallow_parser));
+                        let third_res = parse_expression_rhs(modified_to_parse.restore(shallow_parser), &env_tracker);
                         let Ok((third, to_parse)) = third_res else {break 'inner Err(third_res.err().unwrap())};
                         let span_start = second.span.start;
                         let span_end = third.span.end;
@@ -750,8 +817,9 @@ mod tests {
     }
     #[test]
     fn test_number() {
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("-123'456.5 something");
-        let left = number(to_parse);
+        let left = number(to_parse, &env_tracker);
 
         let term = Term::Num(Number {
             value: -123456.5,
@@ -764,9 +832,10 @@ mod tests {
     #[test]
     fn test_number_zeros() {
         // testcase created because apparently number parsed 0.001 as 0.1
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("0.001");
 
-        let left = number(to_parse);
+        let left = number(to_parse, &env_tracker);
         let term = Term::Num(Number {
             value: 0.001,
             unit: Unit::unitless(), // TODO: parse unit
@@ -785,8 +854,9 @@ mod tests {
     }
     #[test]
     fn test_number_eq() {
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("7.3 = {}");
-        let left = number(to_parse);
+        let left = number(to_parse, &env_tracker);
 
         let term = Term::Num(Number {
             value: 7.3,
@@ -798,8 +868,9 @@ mod tests {
     }
     #[test]
     fn test_number_e() {
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("-123'456.5 e-3");
-        let left = number(to_parse);
+        let left = number(to_parse, &env_tracker);
 
         let term = Term::Num(Number {
             value: -123.4565,
@@ -825,8 +896,9 @@ mod tests {
     // }
     #[test]
     fn test_parse_expression_number () {
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("7.3 = {}");
-        let result = parse_expression(to_parse);
+        let result = parse_expression(to_parse, &env_tracker);
 
         let after_parse = Parsable::with_str_offset(" = {}", 3);
         
@@ -838,8 +910,9 @@ mod tests {
     }
     #[test]
     fn test_parse_expression_no_space () {
+        let env_tracker = Environment::new();
         let to_parse = Parsable::with_string("7+7 = {}");
-        let result = parse_expression(to_parse);
+        let result = parse_expression(to_parse, &env_tracker);
 
         let after_parse = Parsable::with_str_offset(" = {}", 3);
         
@@ -854,8 +927,9 @@ mod tests {
     }
     #[test]
     fn test_parse_expression_space () {
+        let env_tracker = Environment:: new();
         let to_parse = Parsable::with_string("7 + 7 = {}");
-        let result = parse_expression(to_parse);
+        let result = parse_expression(to_parse, &env_tracker);
 
         let after_parse = Parsable::with_str_offset(" = {}", 5);
         
@@ -952,7 +1026,7 @@ mod tests {
 
         //--- test environment
         let expected_millimeter = Unit::new_coded(Some("millimeter".to_string()),
-            "mm".to_owned(),
+            Some("mm".to_owned()),
             HashMap::from([("m".to_owned(), (None, 1))]),
             0.001,
             Quantity::new_nameless(vec![(length, 1)]));
@@ -966,6 +1040,57 @@ mod tests {
         let (_, to_parse) = parse_unit_definition(to_parse, &mut env_tracker)
             .expect("Unit definition parser should not fail for this input");
 
-        let area = expected_environment.get_quantity("a").expect("area should be in the environment").get_content().clone();
+        let area = expected_environment.get_quantity("A").expect("area should be in the environment").get_content().clone();
+    }
+    #[test]
+    fn test_unit_parsing_juxtaposed() {
+        let mut env_tracker = Environment::new();
+        let to_parse = Parsable::with_string("\
+Quantity: l
+Unit: m (l)
+5 m + something...");
+        let (_, to_parse) = parse_quantity_definition(to_parse, &mut env_tracker).expect("Should be able to parse Quantity: l");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+        let (_, to_parse) = parse_unit_definition(to_parse, &mut env_tracker).expect("Should be able to parse Unit: m (l)");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+        let num_result = number(to_parse, &env_tracker);
+        let expected_unit = env_tracker.get_unit("m").expect("unit m should be in the environment").get_content().clone();
+        let expected_number = PTerm::new(Term::Num(Number { value: 5.0, unit: expected_unit }), Span::new(24, 27));
+        let expected_parsable = Parsable::with_str_offset(" + something...", 27);
+        let expected_result = Ok((expected_number, expected_parsable));
+        assert_eq!(num_result, expected_result);
+    }
+    #[test]
+    fn test_unit_parsing_within() {
+                let mut env_tracker = Environment::new();
+        let to_parse = Parsable::with_string("\
+Quantity: l
+Quantity: t
+Unit: m (l)
+Unit: s (t)
+
+5 [m/s*m]
+        ");
+        let (_, to_parse) = parse_quantity_definition(to_parse, &mut env_tracker).expect("Should be able to parse Quantity: l");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+        let (_, to_parse) = parse_quantity_definition(to_parse, &mut env_tracker).expect("Should be able to parse Quantity: t");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+
+        let (_, to_parse) = parse_unit_definition(to_parse, &mut env_tracker).expect("Should be able to parse Unit: m (l)");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+        let (_, to_parse) = parse_unit_definition(to_parse, &mut env_tracker).expect("Should be able to parse Unit: s (t)");
+        let (_, to_parse) = space(to_parse).expect("space shouldn't fail");
+
+        let num_result = number(to_parse, &env_tracker);
+        let length = env_tracker.get_quantity("l").expect("l should exist").get_content().clone();
+        let time = env_tracker.get_quantity("t").expect("t should exist").get_content().clone();
+
+        let expected_quantity = Quantity { name: None, symbol: None, base_quantity: HashMap::from([("l".to_owned(), (None, 2)), ("t".to_owned(), (None, -1))]) };
+        let expected_base_unit = HashMap::from([("s".to_owned(), (None, -1)), ("m".to_owned(), (None, 2))]);
+        let expected_unit = Unit{ name: None, symbol: None, base_unit: expected_base_unit, quantity: expected_quantity, modifier: 1.0 };
+        let expected_number = PTerm::new(Term::Num(Number { value: 5.0, unit: expected_unit }), Span::new(49, 58));
+        let expected_parsable = Parsable::with_str_offset(" + something...", 58);
+        let expected_result = Ok((expected_number, expected_parsable));
+        assert_eq!(num_result, expected_result);
     }
 }

@@ -486,7 +486,10 @@ pub fn operator<'a>(to_parse: Parsable<'a>) -> ParseResult<'a, String> {
         let Ok((a, to_parse)) = op_res else {break 'inner Err(op_res.err().unwrap())};
         // check that the final parsed operator is valid
         // todo: somehow have the comment symbol looked up, to change it at one place.
-        if a == "(" || a == ")" || a == ASSIGNMENT || a == EVALUATE || a == LINE_COMMENT {
+        if a == "(" || a == ")" ||
+            a == "[" || a == "]" || // Square brackets denote unit definition.
+            a == "={" || a == "={}" || // these are required to not detect evaluation pattern as an operator
+            a == ASSIGNMENT || a == EVALUATE || a == LINE_COMMENT {
             let operator_end_pos = to_parse.span.start;
             return Err((to_parse.restore(shallow_parser), Info{ msg: format!("Expected an operator but got {} instead, which is a reserved symbol", a),
                         pos: Span{ start: operator_start_pos, end: operator_end_pos } }))

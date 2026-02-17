@@ -351,10 +351,12 @@ impl Unit {
             modifier: modifier,
         }
     }
-    pub fn new_coded(name: Option<String>, symbol: String, base_unit: HashMap<String, (Option<Unit>, i32)>, modifier: f64, quantity: Quantity) -> Unit {
+    /// creates an unit from the arguments. Note: symbol should be given for variables entered into the environment,
+    /// since the symbol is the key in the environment hash-map.
+    pub fn new_coded(name: Option<String>, symbol: Option<String>, base_unit: HashMap<String, (Option<Unit>, i32)>, modifier: f64, quantity: Quantity) -> Unit {
         Unit {
             name: name,
-            symbol: Some(symbol),
+            symbol: symbol,
             base_unit,
             quantity,
             modifier,

@@ -1,4 +1,36 @@
 -- I can finally annotate this document! yay!
+-- Quantity definitions:
+-- Base quantitys
+Quantity length: l
+Quantity time: t
+Quantity mass: m
+Quantity temperature: T
+Quantity electric current: i
+Quantity luminosity: Iv
+Quantity amount of substance: n
+
+-- Derived quantitys
+Quantity velocity: v = l/t
+
+-- units
+Unit meter: m (l)
+Unit second: s (t)
+Unit kilogram: kg (m)
+Unit kelvin: K (T)
+Unit ampere: A (i)
+Unit candela: cd (Iv)
+Unit mol: mole (n)
+
+
+Unit millimeter: mm (l) = 0.001 * m
+
+10 m + 1 mm = {}
+10 K * 7 s = {}
+v1 = 50 [m/s]
+l1 = 100 m
+v1*l1 ={}
+-- this one should fail to evaluate
+50 kg + 7 m = {}
 -- assignments:
 f = 1/(2/(3/4))
 --a = 5e10
@@ -9,7 +41,7 @@ e = 1+2 * 3
 
 constant = 0.001
 m = 1
-expected_result = constant * m
+expectedResult = constant * m
 
 multiline = 1 +
 5 + 7
