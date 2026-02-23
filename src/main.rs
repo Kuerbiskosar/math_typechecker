@@ -2,10 +2,11 @@ mod numbersystem;
 mod term;
 mod pharsers;
 mod language_parsers;
+mod file_parsers;
 mod syntax_constants;
 
 use pharsers::Parsable;
-use language_parsers::parse_file;
+use file_parsers::parse_file;
 
 use crate::term::Environment;
 
@@ -35,6 +36,6 @@ fn main() {
     }
     env_tracker.evaluate_and_print_to_evaluate(&contents);
     println!("---------------variables---------------");
-    env_tracker.evaluate_and_print_all_variables();
+    //env_tracker.evaluate_and_print_all_variables();
     //env_tracker.print_all_comment_locations(&contents);
 }
