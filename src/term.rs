@@ -73,6 +73,23 @@ impl Environment {
 
         self.to_evaluate.push((term_index, position));
     }
+    /// inserts the term into the environment and links it inside the "equation" vector.
+    pub fn insert_equation(&mut self, expression1: PTerm, expression2:PTerm) {
+        self.terms.push(expression1);
+        let term_index1 = self.terms.len()-1;
+        self.terms.push(expression2);
+        let term_index2 = self.terms.len()-1;
+
+        self.equations.push((term_index1, term_index2));
+    }
+    /// adds the last term added to the environment and the given term to the equation vector.
+    pub fn insert_appended_equation(&mut self, expression: PTerm) {
+        let term_index1 = self.terms.len()-1;
+        self.terms.push(expression);
+        let term_index2 = self.terms.len()-1;
+        
+        self.equations.push((term_index1, term_index2));
+    }
     /// combination of insert_variable and insert_to_evaluate
     /// meant to store expressions like a = 5+5 = {}
     pub fn insert_evaluated_variable(&mut self, var:String, expression: PTerm, result_position: Span) -> Option<&PTerm>{
@@ -144,6 +161,33 @@ impl Environment {
                 Err(msg) => println!("\tevaluation failed with error: {msg:?}"),
             }
         }
+    }
+    // Note: This function only works, if all variables in the term can be evaluated.
+    // The main goal should be to check that the type of functions stay the same.
+    // example, for which this function would return false, even thought it should be true: a/a = 1.
+    /// checks if all Term pairs in the equation vector are equal.
+    /// Returns false if not.
+    pub fn check_all_equation_equality(& mut self) -> bool{
+        let iterator = self.equations.clone();
+        let mut return_value = true;
+        for (term_index1, term_index2) in iterator {
+            let res1 = self.evaluate_term(term_index1);
+            let res2 = self.evaluate_term(term_index2);
+            if res1 != res2 {
+                let res1 = match res1 {
+                    Ok(num) => num.to_string(),
+                    Err(_) => "{}".to_owned(),
+                };
+                let res2 = match res2 {
+                    Ok(num) => num.to_string(),
+                    Err(_) => "{}".to_owned(),
+                };
+                return_value = false;
+                println!("Unequal terms: {} and {} resulted in {} and {} respectively.",
+                    self.terms[term_index1].content, self.terms[term_index2].content, res1, res2)
+            }
+        }
+        return return_value
     }
     pub fn print_all_comment_locations(&self, full: &str) {
         println!("--- comment locations ---");

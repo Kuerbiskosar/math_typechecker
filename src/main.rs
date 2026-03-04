@@ -35,7 +35,10 @@ fn main() {
         println!("---------------------------------------")
     }
     env_tracker.evaluate_and_print_to_evaluate(&contents);
-    println!("---------------variables---------------");
+    //println!("---------------variables---------------");
     //env_tracker.evaluate_and_print_all_variables();
+    //println!("Checking equality of equations:");
+    //let equation_check_res = env_tracker.check_all_equation_equality();
+    //println!("Result: {equation_check_res}");
     //env_tracker.print_all_comment_locations(&contents);
 }

@@ -55,10 +55,12 @@ testing = circumference /10
 1+2 = {}
 
 testing = {}
---x = 21*2 = {}
+x = 21*2 = {}
 
 -- transformations (should eventually be typechecked)
---a*a = a^2
+a = 1
+a+a = 2*a
+b+b+b = 2*b+b = 3*b
 
 -- everything everywhere all at once
 --result = a*a = a^2 = {}

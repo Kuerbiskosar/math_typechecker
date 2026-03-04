@@ -12,8 +12,10 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
     // let res = alt(to_parse, vec![
     //     &|x|parse_assignment(x, env_tracker.clone())
     // ]);
-    let res = parse_assignment(to_parse, env_tracker)
-        .or_else(|(x, e_assignment)|parse_comment(x, env_tracker)
+    let res = parse_assignment_to_evaluate(to_parse, env_tracker)
+        .or_else(|(x, e_assign_eval)|parse_assignment(x, env_tracker)
+        .or_else(|(x, e_assignment)|parse_equation(x, env_tracker)
+        .or_else(|(x, e_equation)|parse_comment(x, env_tracker)
         .or_else(|(x, e_comment)|parse_to_evaluate(x, env_tracker)
         .or_else(|(x, e_evaluate)|parse_quantity_definition(x, env_tracker)
         .or_else(|(x, e_quantity)|parse_unit_definition(x, env_tracker)
@@ -22,7 +24,9 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
             |(x, e_trailing_space)| {
                 let info = Info { msg: format!("Unexpected pattern. Expected assignment, comment or trailing whitespace. \
                                             The errors of these parsers are the following:\n \
+                                            assignment and evaluation: \t{e_assign_eval:?}\n \
                                             assignment:\t{e_assignment:?}\n \
+                                            equation:\t{e_equation:?}\n \
                                             comment:\t{e_comment:?}\n \
                                             evaluation:\t{e_evaluate:?}\n
                                             quantity_definition:\t{e_quantity:?}\n
@@ -33,7 +37,7 @@ pub fn parse_file<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environme
                                       };
                 Err((x, info))
                 }
-            )))))); // one bracket for each parser in the .or_else chain, to keep errors in the scope of the last or_else.
+            )))))))); // one bracket for each parser in the .or_else chain, to keep errors in the scope of the last or_else.
 
     match res {
         Ok((_, to_parse)) => parse_file(to_parse, env_tracker), //return parse_file(to_parse, env_tracker),
@@ -135,6 +139,111 @@ pub fn parse_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
     }
 }
 
+/// parses two or more terms connected with an equal sign.
+/// This parser must be used after assignment parsing, because a single, not yet defined variable is an assignment.
+/// MaybeTODO: change assignment function to fail if a variable gets "overwritten", because it might be an equation.
+fn parse_equation<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
+    let shallow_parser = ShallowParser::new(&to_parse);
+    
+    let res: ParseResult<'a, ()> = 'inner: {
+        let expr1_result = parse_expression(to_parse, &env_tracker);
+        let Ok((expression1, to_parse)) = expr1_result else {break 'inner Err(expr1_result.err().unwrap())};
+        
+        let eq_result = token(to_parse, |x|this_string(x, ASSIGNMENT));
+        let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
+
+        let expr2_result = parse_expression(to_parse, &env_tracker);
+        let Ok((expression2, to_parse)) = expr2_result else {break 'inner Err(expr2_result.err().unwrap())};
+
+        // a = b = c = d = e
+
+        // at this point in the function we start modifying the env_tracker.
+        // we can't return an error after this point, because that would leave the env_tracker in a bad state.
+
+        env_tracker.insert_equation(expression1, expression2);
+        // check for maybe more chained terms
+        let mut to_parse = to_parse; // make to_parse modifiable, to update it in previous iterations of the loop
+        let to_parse = loop {
+            // let expression1 = expression2.clone(); // handled through insert_appended_equation method
+            let shallow_parser = ShallowParser::new(&to_parse);
+            let eq_result = token(to_parse, |x|this_string(x, ASSIGNMENT));
+            let Ok((_, to_parse_loop)) = eq_result else {
+                let to_parse = eq_result.err().unwrap().0.restore(shallow_parser);
+                break to_parse;
+            };
+
+            let expr_result = parse_expression(to_parse_loop, &env_tracker);
+            let Ok((expression2, to_parse_loop)) = expr_result else {
+                let to_parse = expr_result.err().unwrap().0.restore(shallow_parser);
+                break to_parse;
+            };
+
+            env_tracker.insert_appended_equation(expression2);
+            to_parse = to_parse_loop;
+        };
+        
+        Ok(((), to_parse))
+    };
+    
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
+}
+
+/// parses something in the form of
+/// sym = term = {evaluation_pattern}
+fn parse_assignment_to_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
+    let shallow_parser = ShallowParser::new(&to_parse);
+    
+    let res: ParseResult<'a, ()> = 'inner: {
+        let var_start_pos = to_parse.span.start;
+        let var_result = token(to_parse, sym);
+        let Ok((var, to_parse)) = var_result else {break 'inner Err(var_result.err().unwrap())};
+
+        let var_end_pos = to_parse.span.start;
+        
+        let eq_result = token(to_parse, |x|this_string(x, ASSIGNMENT));
+        let Ok((_, to_parse)) = eq_result else {break 'inner Err(eq_result.err().unwrap())};
+
+        let expr_result = parse_expression(to_parse, &env_tracker);
+        let Ok((expression, to_parse)) = expr_result else {break 'inner Err(expr_result.err().unwrap())};
+
+        let pat_result = parse_evaluation_pattern(to_parse);
+        let Ok((evaluated_position, to_parse)) = pat_result else {break 'inner Err(pat_result.err().unwrap())};
+
+        // at this point in the function we start modifying the env_tracker.
+        // we can't return an error after this point, because that would leave the env_tracker in a bad state.
+        let exists = env_tracker.insert_evaluated_variable(var.clone(), expression, evaluated_position);
+        let to_parse = match exists {
+            Some(overwritten) => to_parse.add_error(Info {
+                // Note: maybe it is possible to report the position of the previous term (but for that I need to have the whole file string)
+                msg: format!("'{}' already exists as '{}' in this scope. The previous definition will not be used. (scopes aren't implemented yet, if it was in another scope, this would merely be a warning)", var, overwritten.content),
+                pos: Span{start: var_start_pos, end: var_end_pos},
+            }),
+            None => to_parse,
+        };
+        
+        Ok(((), to_parse))
+    };
+    
+    match res {
+        ok @ Ok(_) => ok,
+        Err((to_parse, info)) => {
+            let to_parse = to_parse.restore(shallow_parser);
+            return Err((to_parse,info))
+        },
+    }
+}
+
+/// parses something in the form of
+/// sym = term = term = ... = {evaluation_pattern}
+fn parse_assignment_eqation_evaluate<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
+    todo!()
+}
 
 fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
     // parses everything after Quantity Name: symbol
@@ -222,7 +331,7 @@ fn parse_quantity_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mu
 
 
 fn parse_unit_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut Environment) -> ParseResult<'a, ()> {
-    /// parses " ('quantity symbol')" from "Unit 'Name': ("quantity symbol") = 'expression'"
+    /// parses " ('quantity symbol')" from "Unit 'Name': 'unit symbol' ("quantity symbol") = 'expression'"
     /// and returns the quantity, with its position. The position can be used to give error information,
     /// if in "Unit Gramforce: gf (F) = 1/9.81*kg*m/s^2" The quantity of the rhs isn't F.
     fn quantity_indicator<'a, 'b> (to_parse: Parsable<'a>, env_tracker: &'b Environment) -> ParseResult<'a, Spanned<Quantity>> {
@@ -296,6 +405,10 @@ fn parse_unit_definition<'a, 'b>(to_parse: Parsable<'a>, env_tracker: &'b mut En
             |x, (quantity_name, _separator)| Ok((Some(quantity_name), x)),
             None).expect("optional parser can't fail");
 
+        // TODO: I want to allow symbols like ° or ' as units.
+        // TODO: check that this change doesn't interfere with operator parsing
+        // (15m+7 should work, but '' should be a valid symbol (for degree seconds), therefore ++ could be either a operator or a unit symbol)
+        // (since both need to be defined, before parsing the actual expression, we can throw an error if ++ is defined as both an operator and a unit smbol.)
         let symbol_res = token(to_parse, sym);
         let Ok((symbol, to_parse)) = symbol_res else {break 'inner Err(symbol_res.err().unwrap())};
         
